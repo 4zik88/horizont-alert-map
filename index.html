@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <title>ГОРИЗОНТ — радарна карта тривог України</title>
+  <meta name="author" content="Viacheslav Tykhenkyi" />
+  <meta name="description" content="ГОРИЗОНТ — радарна карта повітряних тривог і цілей над Україною. Дані: NEPTUN. Розробка: Viacheslav Tykhenkyi." />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%2215.5%22%20fill%3D%22%23120c04%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%2212.5%22%20fill%3D%22none%22%20stroke%3D%22%23ffb62e%22%20stroke-opacity%3D%22.45%22%20stroke-width%3D%221.4%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%227.5%22%20fill%3D%22none%22%20stroke%3D%22%23ffb62e%22%20stroke-opacity%3D%22.36%22%20stroke-width%3D%221.2%22%2F%3E%3Cpath%20d%3D%22M16%2016V3.2A12.8%2012.8%200%200%201%2027.1%209.6Z%22%20fill%3D%22%23ffb62e%22%20fill-opacity%3D%22.6%22%2F%3E%3Cpath%20d%3D%22M16%203.2v25.6M3.2%2016h25.6%22%20stroke%3D%22%23ffb62e%22%20stroke-opacity%3D%22.24%22%20stroke-width%3D%221%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%222.3%22%20fill%3D%22%23ffd98a%22%2F%3E%3C%2Fsvg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Unbounded:wght@600;700&display=swap" rel="stylesheet">
+  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css?v=26" />
+</head>
+<body>
+  <div id="map" aria-label="Інтерактивна тактична карта світу"></div>
+
+  <div class="radar-grid"></div>
+  <div class="radar-sweep"></div>
+  <div class="scanlines"></div>
+  <div class="vignette"></div>
+
+  <div class="timer-panel" aria-label="Актуальное время Украины">
+    <span class="timer-label">ЧАС УКРАЇНИ</span>
+    <strong id="countdown">00:00:00</strong>
+    <span class="timer-state" id="timerState">--.--.----</span>
+    <span class="map-title">ГОРИЗОНТ</span>
+  </div>
+
+  <header class="hud-top">
+    <div class="system-name">
+      <span class="system-dot"></span>
+    </div>
+    <div class="live-status"><span class="live-dot"></span><b class="live-status__text">LIVE</b></div>
+    <div id="threatCount" class="threat-count">ЦІЛІ: 0</div>
+  </header>
+
+  <div class="reticle" aria-hidden="true">
+    <span class="reticle-h"></span>
+    <span class="reticle-v"></span>
+    <span class="reticle-ring ring-a"></span>
+    <span class="reticle-ring ring-b"></span>
+    <span class="reticle-ring ring-c"></span>
+  </div>
+
+  <div class="controls-panel">
+    <button id="homeBtn" class="radar-btn">⌖ ЦЕНТР: УКРАЇНА</button>
+    <button id="styleBtn" class="radar-btn compact" title="Сменить режим радара">MODE</button>
+  </div>
+
+  <div class="coordinates" id="coords">31.2056 E / 48.3794 N</div>
+
+  <div class="data-attribution"><span>ДАНІ ТРИВОГ: <a href="https://neptun.in.ua/" target="_blank" rel="noopener noreferrer">NEPTUN</a></span><span class="data-attribution__author">РОЗРОБКА: Viacheslav Tykhenkyi</span></div>
+
+  <div class="corner corner-tl"></div>
+  <div class="corner corner-tr"></div>
+  <div class="corner corner-bl"></div>
+  <div class="corner corner-br"></div>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="https://neptun.in.ua/sdk/neptun.js"></script>
+  <script src="app.js?v=26"></script>
+
+<div id="radarOverlay"><div class="rings"></div><div class="sweep"></div><div class="cross"></div></div>
+<style>
+#radarOverlay{
+  pointer-events:none;
+  position:fixed;
+  left:50%;
+  top:50%;
+  transform:translate(-50%,-50%);
+  width:896px;
+  height:896px;
+  border-radius:50%;
+  z-index:9999;
+  opacity:.28;
+  overflow:hidden;
+  border:1px solid rgba(255,182,46,.30);
+  background:
+    radial-gradient(circle at center, rgba(40,26,6,.10) 0%, rgba(28,18,5,.08) 52%, rgba(12,8,2,.24) 100%),
+    repeating-radial-gradient(circle at center, transparent 0 7px, rgba(255,182,46,.03) 8px 9px);
+  box-shadow:
+    0 0 18px rgba(255,182,46,.14),
+    inset 0 0 24px rgba(255,182,46,.07);
+}
+#radarOverlay::after{
+  content:'';
+  position:absolute;
+  inset:0;
+  border-radius:50%;
+  opacity:.12;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(255,214,150,.16) 0 1px, transparent 1px 4px),
+    repeating-linear-gradient(90deg, rgba(255,182,46,.07) 0 1px, transparent 1px 7px);
+  mix-blend-mode:screen;
+}
+#radarOverlay .rings{
+  position:absolute;
+  inset:0;
+  border-radius:50%;
+  background:
+    radial-gradient(circle, transparent 19%, rgba(255,182,46,.34) 20%, transparent 20.7%,
+    transparent 39%, rgba(255,182,46,.28) 40%, transparent 40.7%,
+    transparent 59%, rgba(255,182,46,.22) 60%, transparent 60.7%,
+    transparent 79%, rgba(255,182,46,.18) 80%, transparent 80.7%);
+  filter:drop-shadow(0 0 3px rgba(255,182,46,.20));
+}
+#radarOverlay .cross:before,#radarOverlay .cross:after{
+  content:'';
+  position:absolute;
+  background:rgba(255,182,46,.24);
+  box-shadow:0 0 4px rgba(255,182,46,.14);
+}
+#radarOverlay .cross:before{left:50%;top:0;width:1px;height:100%;transform:translateX(-50%)}
+#radarOverlay .cross:after{top:50%;left:0;height:1px;width:100%;transform:translateY(-50%)}
+#radarOverlay .sweep{
+  position:absolute;
+  inset:-2px;
+  border-radius:50%;
+  background:conic-gradient(
+    from 0deg,
+    rgba(255,182,46,0) 0deg,
+    rgba(255,182,46,.04) 282deg,
+    rgba(255,182,46,.10) 318deg,
+    rgba(255,196,90,.22) 346deg,
+    rgba(255,214,150,.40) 358deg,
+    rgba(255,182,46,0) 360deg
+  );
+  animation:radarspin 6.8s linear infinite;
+  filter:blur(.54px) drop-shadow(0 0 7px rgba(255,182,46,.20));
+  mix-blend-mode:screen;
+}
+@keyframes radarspin{to{transform:rotate(360deg)}}
+</style>
+</body>
+</html>

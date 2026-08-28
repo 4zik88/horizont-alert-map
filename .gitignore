@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Локальні налаштування Claude Code — машинно-специфічні
+.claude/settings.local.json

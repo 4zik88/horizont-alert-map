@@ -1,0 +1,675 @@
+:root {
+  /* Янтарна гама класичного радарного індикатора. */
+  --radar: #ffb62e;
+  --radar-strong: #ffd98a;
+  --radar-soft: rgba(255,182,46,.18);
+  --radar-line: rgba(255,182,46,.26);
+  --bg: #120c04;
+  --panel: rgba(28, 16, 4, .74);
+}
+
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body {
+  background: var(--bg);
+  color: var(--radar);
+  font-family: "Share Tech Mono", monospace;
+}
+
+/* Крізь напівпрозорий растровий шар просвічує саме цей колір —
+   він і дає карті тепло замість колишнього CSS-фільтра sepia(). */
+#map { position: fixed; inset: 0; background: #1a1206; }
+.maplibregl-ctrl-bottom-right,
+.maplibregl-ctrl-bottom-left { display: none; }
+
+.radar-grid,
+.scanlines,
+.vignette,
+.radar-sweep {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.radar-grid {
+  opacity: .30;
+  background-image:
+    linear-gradient(var(--radar-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--radar-line) 1px, transparent 1px),
+    linear-gradient(rgba(255,182,46,.10) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,182,46,.10) 1px, transparent 1px);
+  background-size: 120px 120px, 120px 120px, 24px 24px, 24px 24px;
+  mix-blend-mode: screen;
+}
+
+.scanlines {
+  opacity: .10;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(255,214,150,.12) 0,
+    rgba(255,214,150,.12) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+}
+
+.vignette {
+  background:
+    radial-gradient(circle at center, transparent 25%, rgba(8, 4, 0, .20) 56%, rgba(6, 3, 0, .72) 100%),
+    linear-gradient(180deg, rgba(12,6,0,.16), rgba(4,2,0,.28));
+}
+
+.radar-sweep {
+  left: 50%; 
+  width: min(120vw, 120vh);
+  height: min(120vw, 120vh);
+  inset: auto;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg 326deg,
+    rgba(255,182,46,.02) 332deg,
+    rgba(255,182,46,.18) 354deg,
+    rgba(255,214,138,.55) 359deg,
+    transparent 360deg
+  );
+  filter: blur(.2px);
+  mix-blend-mode: screen;
+  animation: sweep 7s linear infinite;
+  transform-origin: center;
+}
+@keyframes sweep {
+  to { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+.hud-top {
+  position: fixed;
+  z-index: 5;
+  /* Раніше top не був заданий узагалі, а left:28px одразу перебивався на 54%,
+     тож рядок ліз під верхній край і обрізався. Ставимо його під кнопками:
+     центр угорі зайнятий таймером, правий верх — лічильником цілей. */
+  top: 62px;
+  left: 28px;
+  right: auto;
+  /* Зупиняємось, не доходячи до центрованої панелі таймера (до 250px завширшки). */
+  max-width: calc(50vw - 150px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none;
+  font-size: 13px;
+  letter-spacing: .16em;
+  text-shadow: 0 0 12px rgba(255,182,46,.8);
+}
+.system-name, .live-status { display: flex; align-items: center; gap: 10px; }
+.system-dot, .live-status .live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--radar);
+  box-shadow: 0 0 14px var(--radar);
+}
+.live-status .live-dot { animation: blink 1.4s infinite; }
+@keyframes blink { 50% { opacity: .3; } }
+
+.timer-panel {
+  position: fixed;
+  z-index: 6;
+  
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 210px;
+  padding: 10px 20px 8px;
+  text-align: center;
+  background: linear-gradient(180deg, rgba(5,29,16,.86), rgba(3,17,10,.68));
+  border: 1px solid rgba(255,182,46,.46);
+  box-shadow: 0 0 24px rgba(255,182,46,.13), inset 0 0 18px rgba(255,182,46,.06);
+  clip-path: polygon(10px 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%, 0 10px);
+}
+.timer-label, .timer-state { display: block; font-size: 9px; letter-spacing: .22em; opacity: .72; }
+.timer-panel strong {
+  display: block;
+  color: var(--radar-strong);
+  font-size: 25px;
+  line-height: 1;
+  margin: 4px 0;
+  letter-spacing: .1em;
+  text-shadow: 0 0 15px rgba(255,217,138,.8);
+}
+
+.reticle {
+  position: fixed;
+  z-index: 3;
+  left: 50%; 
+  width: min(70vw, 70vh);
+  height: min(70vw, 70vh);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  opacity: .30;
+}
+.reticle-ring {
+  position: absolute;
+  left: 50%; 
+  transform: translate(-50%,-50%);
+  border: 1px solid rgba(255,182,46,.34);
+  border-radius: 50%;
+}
+.ring-a { width: 100%; height: 100%; }
+.ring-b { width: 66%; height: 66%; }
+.ring-c { width: 33%; height: 33%; }
+.reticle-h, .reticle-v { position: absolute; background: rgba(255,182,46,.28); }
+.reticle-h { left: 0; right: 0;  height: 1px; }
+.reticle-v {  bottom: 0; left: 50%; width: 1px; }
+
+.controls-panel {
+  position: fixed;
+  z-index: 6;
+  left: 28px;
+  
+  display: flex;
+  gap: 10px;
+}
+.radar-btn {
+  height: 44px;
+  border: 1px solid rgba(255,182,46,.55);
+  background: rgba(4,27,14,.78);
+  color: var(--radar-strong);
+  padding: 0 18px;
+  font: 13px "Share Tech Mono", monospace;
+  letter-spacing: .08em;
+  cursor: pointer;
+  box-shadow: inset 0 0 16px rgba(255,182,46,.06), 0 0 18px rgba(255,182,46,.06);
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+}
+.radar-btn:hover { background: rgba(68,129,76,.32); box-shadow: 0 0 20px rgba(255,182,46,.22); }
+.radar-btn.compact { padding: 0 13px; }
+
+.coordinates {
+  position: fixed;
+  z-index: 5;
+  left:58%;
+  
+  color: var(--radar-strong);
+  font-size: 12px;
+  letter-spacing: .08em;
+  text-shadow: 0 0 12px var(--radar);
+  background: rgba(2,20,10,.58);
+  border-left: 2px solid var(--radar);
+  padding: 8px 12px;
+  bottom: 20px;
+}
+
+.pulse-label {
+  position: fixed;
+  z-index: 5;
+  transform: translate(-50%,-50%);
+  color: var(--radar-strong);
+  font-size: 12px;
+  letter-spacing: .14em;
+  pointer-events: none;
+  text-shadow: 0 0 12px #000, 0 0 14px var(--radar);
+}
+.pulse-label span {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--radar-strong);
+  margin-right: 8px;
+  box-shadow: 0 0 0 0 rgba(255,217,138,.45), 0 0 18px var(--radar-strong);
+  animation: targetPulse 1.6s infinite;
+}
+@keyframes targetPulse {
+  50% { box-shadow: 0 0 0 13px rgba(255,217,138,0), 0 0 28px var(--radar-strong); }
+}
+
+.corner { position: fixed; z-index: 5; width: 45px; height: 45px; pointer-events: none; opacity: .78; }
+.corner::before, .corner::after { content:""; position:absolute; background:var(--radar); box-shadow: 0 0 10px rgba(255,182,46,.6); }
+.corner::before { width: 32px; height: 1px; }
+.corner::after { width: 1px; height: 32px; }
+.corner-tl {  left: 12px; }
+.corner-tr {  right: 12px; transform: rotate(90deg); }
+.corner-bl { bottom: 12px; left: 12px; transform: rotate(-90deg); }
+.corner-br { bottom: 12px; right: 12px; transform: rotate(180deg); }
+
+/* Друга тема (кнопка MODE) — холодна сталева, як контраст до янтарної. */
+body.alt {
+  --radar: #9fb8cc;
+  --radar-strong: #e6f1fa;
+  --radar-soft: rgba(159,184,204,.18);
+  --radar-line: rgba(159,184,204,.24);
+  --bg: #0b1016;
+}
+
+@media (max-width: 720px) {
+  .hud-top { top: 56px; left: 14px; right: auto; max-width: calc(100vw - 28px); font-size: 10px; }
+  .system-name { max-width: 60%; }
+  .timer-panel {  min-width: 176px; }
+  .timer-panel strong { font-size: 21px; }
+  .reticle { width: 88vw; height: 88vw; }
+  .controls-panel { left: 14px; bottom: 14px; }
+  .radar-btn { height: 40px; font-size: 11px; padding: 0 13px; }
+  .coordinates { display: none; }
+}
+
+.map-title {
+  display: block;
+  color: var(--radar-strong);
+  font-family: "Unbounded", sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .2em;
+  white-space: nowrap;
+  text-shadow: 0 0 8px rgba(255,217,138,.95), 0 0 22px rgba(255,182,46,.6);
+}
+
+.timer-panel { min-width: 250px; }
+.timer-panel strong { font-size: 28px; letter-spacing: .08em; }
+
+@media (max-width: 720px) {
+  .timer-panel { min-width: 220px; }
+  .map-title { font-size: 9px; letter-spacing: .16em; }
+}
+
+/* Strong administrative visibility over satellite terrain */
+
+.data-attribution {
+  position: fixed;
+  z-index: 6;
+  right: 22px;
+  bottom: 18px;
+  padding: 6px 9px;
+  font-size: 10px;
+  letter-spacing: .1em;
+  color: rgba(255,217,138,.78);
+  background: rgba(2,20,10,.62);
+  border: 1px solid rgba(255,182,46,.22);
+  text-shadow: 0 0 8px rgba(255,182,46,.55);
+}
+.data-attribution a {
+  color: var(--radar-strong);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(255,217,138,.45);
+}
+.data-attribution a:hover { border-bottom-color: var(--radar-strong); }
+
+@media (max-width: 720px) {
+  .data-attribution { right: 10px; bottom: 10px; font-size: 9px; }
+}
+
+.threat-count {
+  position: fixed;
+  top: 58px;
+  right: 18px;
+  z-index: 10020;
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 75, 75, .55);
+  background: rgba(20, 0, 0, .72);
+  color: #ff7777;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 13px;
+  letter-spacing: .08em;
+  box-shadow: 0 0 14px rgba(255, 0, 0, .18);
+  backdrop-filter: blur(5px);
+  max-width: 280px;
+  text-align: right;
+}
+.threat-count__total {
+  white-space: nowrap;
+}
+/* Розбивка за типами: кожен тип у своєму кольорі з THREAT_META. */
+.threat-count__types {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 3px 8px;
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(255, 75, 75, .3);
+}
+.threat-count__chip {
+  color: var(--chip-color, #ff7777);
+  font-size: 11px;
+  letter-spacing: .06em;
+  white-space: nowrap;
+  text-shadow: 0 0 6px rgba(0, 0, 0, .9);
+}
+
+@media (max-width: 720px) {
+  .threat-count { max-width: 190px; font-size: 11px; }
+  .threat-count__chip { font-size: 10px; }
+}
+.maplibregl-popup-content {
+  background: rgba(10, 16, 8, .96);
+  color: #ffeccd;
+  border: 1px solid rgba(255, 84, 84, .58);
+  box-shadow: 0 0 18px rgba(0, 0, 0, .55);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 12px;
+  line-height: 1.38;
+}
+.maplibregl-popup-tip { border-top-color: rgba(10, 16, 8, .96) !important; }
+.maplibregl-popup-close-button { color: #ff7777; font-size: 18px; }
+.threat-popup strong { color: #ff7878; font-size: 14px; }
+.threat-popup hr { border: 0; border-top: 1px solid rgba(255,255,255,.16); margin: 7px 0; }
+
+/* v19: маркери географічно зафіксовані під час масштабування */
+.live-threat-marker {
+  --threat-color: #ff4d4d;
+  position: absolute;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,.95));
+  z-index: 50;
+}
+.live-threat-pulse {
+  position: absolute;
+  inset: 3px;
+  border: 1px solid var(--threat-color);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--threat-color) 25%, transparent);
+  animation: live-threat-pulse 1.25s ease-out infinite;
+}
+.live-threat-icon {
+  position: relative;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  display: block;
+  transform-origin: center;
+  will-change: transform;
+}
+.live-threat-icon svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  filter: drop-shadow(0 1px 1px rgba(0,0,0,.95));
+}
+.live-threat-icon .icon-body {
+  fill: #f7f7f2;
+  stroke: #111;
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+}
+.live-threat-icon .icon-detail {
+  fill: none;
+  stroke: var(--threat-color);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.live-threat-icon .icon-window,
+.live-threat-icon .icon-sensor {
+  fill: var(--threat-color);
+  stroke: #111;
+  stroke-width: 1;
+}
+
+.live-threat-icon .target-silhouette {
+  fill: #fff;
+  stroke: rgba(0,0,0,.92);
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+}
+.live-threat-icon .target-cutout {
+  fill: rgba(25,25,25,.9);
+}
+.live-threat-icon .target-stroke {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+.live-threat-icon .target-ring {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 3.5;
+}
+.live-threat-label {
+  position: absolute;
+  top: 29px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  padding: 2px 5px;
+  border: 1px solid color-mix(in srgb, var(--threat-color) 75%, transparent);
+  border-radius: 3px;
+  background: rgba(5, 7, 5, .88);
+  color: var(--threat-color);
+  font: 800 10px/1.2 "Share Tech Mono", monospace;
+  letter-spacing: .04em;
+  text-shadow: 0 0 4px #000;
+}
+@keyframes live-threat-pulse {
+  0% { transform: scale(.65); opacity: .95; }
+  100% { transform: scale(1.65); opacity: 0; }
+}
+
+@media (max-width: 900px) {
+  .data-attribution { display: none; }
+}
+
+/* --- Точність позиції ------------------------------------------------------
+   Ціль із приблизною позицією не повинна виглядати як точний вимір:
+   пунктирна підпис-рамка й притлумлений значок відрізняють її від
+   підтвердженого треку. areaOnly — позиції немає взагалі, лише район. */
+/* Непідтверджена ціль (lifecycle != confirmed) — приглушений колір, пунктирний
+   підпис і, головне, ВІДСУТНЯ пульсація. Пульсує лише підтверджена ціль, тож
+   різницю видно з одного погляду навіть на щільній карті. */
+.live-threat-marker.is-uncertain .live-threat-icon {
+  /* Приглушуємо яскравість, але не відтінок: сильна десатурація зсуває червоний
+     у сіро-зелений, і ціль починає читатися як «безпечна». */
+  opacity: .5;
+  filter: saturate(.75);
+}
+.live-threat-marker.is-uncertain .live-threat-label {
+  border-style: dashed;
+  opacity: .72;
+  filter: saturate(.8);
+}
+.live-threat-marker.is-uncertain .live-threat-pulse {
+  animation: none;
+  opacity: .16;
+}
+.live-threat-marker.is-approx .live-threat-label { border-style: dashed; }
+.live-threat-marker.is-area-only .live-threat-icon { opacity: .5; }
+.live-threat-marker.is-area-only .live-threat-label {
+  border-style: dashed;
+  opacity: .8;
+}
+.live-threat-marker.is-area-only .live-threat-pulse {
+  animation: none;
+  opacity: .22;
+}
+
+/* Попап цілі має бути над маркерами: .live-threat-marker має z-index 50,
+   і без цього правила сусідні значки й підписи перекривають текст. */
+.maplibregl-popup {
+  z-index: 200;
+}
+
+/* Неперевірені цілі: лишаються на карті, але подані тихіше за підтверджені. */
+.threat-count__uncertain {
+  margin-top: 3px;
+  font-size: 11px;
+  letter-spacing: .06em;
+  color: rgba(255, 145, 145, .72);
+  white-space: nowrap;
+}
+
+/* Кількість злитих дублів — службова інформація, найтихіший рядок у панелі. */
+.threat-count__merged {
+  margin-top: 2px;
+  font-size: 10px;
+  letter-spacing: .06em;
+  color: rgba(255, 145, 145, .5);
+  white-space: nowrap;
+}
+
+/* Вік даних тривог: жовтий — опитування відстає, червоний — джерело недоступне. */
+.live-status__text { font-style: normal; font-weight: inherit; }
+.live-status.is-stale .live-status__text { color: #ffd166; }
+.live-status.is-error .live-status__text { color: #ff6b6b; }
+.live-status.is-error .live-dot { background: #ff6b6b; box-shadow: 0 0 14px #ff6b6b; }
+
+/* Підпис авторства під атрибуцією джерела даних. */
+.data-attribution {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  line-height: 1.35;
+}
+.data-attribution__author {
+  font-size: 9px;
+  letter-spacing: .12em;
+  color: rgba(255,217,138,.55);
+  text-shadow: 0 0 6px rgba(255,182,46,.35);
+}
+@media (max-width: 720px) {
+  .data-attribution__author { font-size: 8px; }
+}
+
+/* Рядок стану тривог лежить прямо на карті, тож без підкладки він губиться
+   серед підписів населених пунктів. Оформлюємо як решту панелей HUD. */
+.hud-top .live-status {
+  padding: 6px 10px;
+  background: rgba(18, 12, 4, .74);
+  border: 1px solid rgba(255, 182, 46, .34);
+  backdrop-filter: blur(4px);
+  white-space: nowrap;
+}
+.hud-top .system-name { display: none; }
+
+/* Коли горить обласна тривога, декоративні накладки відступають, щоб не
+   з'їдати контраст. Це CSS на DOM-елементах, тож обмеження «paint MapLibre
+   не анімується через CSS» тут не заважає. */
+#radarOverlay, .radar-grid, .reticle { transition: opacity 1.2s ease; }
+body.has-oblast-alert #radarOverlay { opacity: .14; }
+body.has-oblast-alert .radar-grid { opacity: .16; }
+body.has-oblast-alert .reticle { opacity: .16; }
+
+/* ==========================================================================
+   Мобільна адаптація
+   Наявні @media-правила розкидані по файлу й місцями суперечать одне одному
+   (.timer-panel отримує і 176px, і 220px). Цей блок іде останнім і задає
+   узгоджену розкладку: він виграє за порядком, не ламаючи решти файлу.
+   ========================================================================== */
+
+/* Планшети й вузькі вікна */
+@media (max-width: 900px) {
+  /* Декоративне коло було жорстко 896px — ширше за екран телефона вдвічі.
+     Селектор із html потрібен для ваги: стилі #radarOverlay лежать в
+     інлайновому <style> у body, який іде після цього файлу й інакше перебиває. */
+  html #radarOverlay {
+    width: min(896px, 92vmin);
+    height: min(896px, 92vmin);
+  }
+}
+
+@media (max-width: 720px) {
+  /* Рядок стану тривог — окремою смугою на всю ширину під кнопками,
+     інакше він налазить на таймер. */
+  .hud-top {
+    top: 96px;
+    left: 12px;
+    right: 12px;
+    max-width: none;
+    font-size: 10px;
+  }
+  .hud-top .live-status {
+    width: 100%;
+    padding: 5px 8px;
+    /* Текст довгий — дозволяємо перенос замість виїзду за екран. */
+    white-space: normal;
+    line-height: 1.4;
+  }
+
+  .controls-panel { top: 10px; left: 12px; bottom: auto; gap: 8px; }
+  .radar-btn { height: 44px; font-size: 11px; padding: 0 12px; }  /* 44px — мінімум для пальця */
+
+  /* Таймер їде вниз: у верхньому ряду для нього немає місця поруч із
+     кнопками й лічильником цілей. */
+  .timer-panel {
+    top: auto;
+    bottom: 12px;
+    min-width: 0;
+    width: min(200px, 54vw);
+    padding: 6px 10px 5px;
+  }
+  .timer-panel strong { font-size: 19px; }
+  .timer-label, .timer-state { font-size: 8px; letter-spacing: .16em; }
+  .map-title { font-size: 9px; letter-spacing: .14em; }
+
+  .threat-count { top: 10px; right: 12px; max-width: calc(100vw - 24px); padding: 5px 8px; font-size: 11px; }
+  .threat-count__types { gap: 2px 6px; margin-top: 4px; padding-top: 4px; }
+
+  /* Підпис — над таймером, а не поруч: на вузькому екрані вони перетинались. */
+  .data-attribution { right: 10px; bottom: 92px; font-size: 8px; padding: 4px 6px; }
+  .coordinates { display: none; }
+
+  /* Підписи цілей на щільній карті зливаються — трохи стискаємо. */
+  .live-threat-label { font-size: 9px; padding: 1px 4px; top: 26px; }
+  .live-threat-marker { width: 26px; height: 26px; }
+  .live-threat-icon { width: 19px; height: 19px; }
+
+  .maplibregl-popup { max-width: calc(100vw - 24px) !important; }
+  .maplibregl-popup-content { font-size: 12px; }
+
+  /* Накладки на маленькому екрані заважають більше, ніж прикрашають. */
+  .radar-grid { opacity: .18; }
+  .reticle { opacity: .20; }
+  #radarOverlay { opacity: .18; }
+}
+
+/* Телефони в портреті */
+@media (max-width: 480px) {
+  .hud-top { top: 92px; font-size: 9px; }
+  .timer-panel { width: min(178px, 46vw); }
+  .timer-panel strong { font-size: 17px; }
+  .radar-btn { padding: 0 10px; font-size: 10px; }
+  .threat-count { font-size: 10px; }
+  .threat-count__chip { font-size: 9px; }
+}
+
+/* Телефон у ландшафті: висоти майже немає, прибираємо все зайве */
+@media (max-height: 480px) and (orientation: landscape) {
+  .hud-top { top: 8px; left: 50%; right: auto; transform: translateX(-50%); max-width: 60vw; }
+  .hud-top .live-status { white-space: nowrap; }
+  .timer-panel { display: none; }
+  .threat-count { top: 8px; }
+  .reticle, #radarOverlay { display: none; }
+}
+
+/* Вирізи й заокруглення екрана (iPhone тощо).
+   Обов'язково всередині медіазапиту: безумовний блок ішов би після мобільних
+   правил і перебивав би їхні bottom/right своїми значеннями. */
+@media (max-width: 720px) {
+  @supports (padding: max(0px)) {
+    .controls-panel { left: max(12px, env(safe-area-inset-left)); }
+    .threat-count { right: max(12px, env(safe-area-inset-right)); }
+    .hud-top {
+      left: max(12px, env(safe-area-inset-left));
+      right: max(12px, env(safe-area-inset-right));
+    }
+    .data-attribution {
+      right: max(10px, env(safe-area-inset-right));
+      bottom: calc(92px + env(safe-area-inset-bottom));
+    }
+    .timer-panel { bottom: calc(12px + env(safe-area-inset-bottom)); }
+  }
+}
+
+/* Прибирання анімацій для тих, хто їх вимкнув у системі */
+@media (prefers-reduced-motion: reduce) {
+  .radar-sweep, #radarOverlay .sweep, .live-threat-pulse,
+  .live-status .live-dot, .pulse-label span {
+    animation: none !important;
+  }
+  #radarOverlay, .radar-grid, .reticle { transition: none !important; }
+}
