@@ -673,3 +673,43 @@ body.has-oblast-alert .reticle { opacity: .16; }
   }
   #radarOverlay, .radar-grid, .reticle { transition: none !important; }
 }
+
+/* --- Моє місцезнаходження --------------------------------------------------
+   Холодний блакитний навмисно: власна позиція не має читатися як загроза
+   в червоно-янтарній системі кольорів карти. */
+.my-location-marker {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  z-index: 45;                      /* нижче за маркери цілей (50) */
+}
+.my-location-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #a8e4ff;
+  border: 2px solid rgba(10, 24, 34, .9);
+  box-shadow: 0 0 10px rgba(127, 212, 255, .9);
+}
+.my-location-pulse {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(127, 212, 255, .8);
+  animation: my-location-pulse 2.2s ease-out infinite;
+}
+@keyframes my-location-pulse {
+  0%   { transform: scale(.5); opacity: .9; }
+  100% { transform: scale(1.7); opacity: 0; }
+}
+.radar-btn.is-active {
+  background: rgba(127, 212, 255, .18);
+  border-color: rgba(168, 228, 255, .75);
+  color: #d7f2ff;
+}
+@media (prefers-reduced-motion: reduce) {
+  .my-location-pulse { animation: none; opacity: .35; }
+}

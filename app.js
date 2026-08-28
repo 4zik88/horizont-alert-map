@@ -1287,6 +1287,9 @@ const map = new maplibregl.Map({
 let returnTimer;
 function startReturnTimer() {
   clearTimeout(returnTimer);
+  // Поки тримаємо вигляд на своєму місцезнаходженні, карта не має сама
+  // відлітати назад до центру країни.
+  if (followingMyLocation) return;
   returnTimer = setTimeout(() => returnToUkraine(true), RETURN_DELAY);
 }
 function returnToUkraine(animated = true) {
@@ -1500,7 +1503,157 @@ map.on('mousemove', (event) => {
   document.getElementById('coords').textContent = `${Math.abs(lng).toFixed(4)}° ${lng >= 0 ? 'E' : 'W'} / ${Math.abs(lat).toFixed(4)}° ${lat >= 0 ? 'N' : 'S'}`;
 });
 map.on('resize', () => map.fire('move'));
-document.getElementById('homeBtn').addEventListener('click', () => returnToUkraine(true));
+// --- Моє місцезнаходження ---------------------------------------------------
+// Координати лишаються виключно в браузері: нікуди не надсилаються, ніде не
+// зберігаються і на сервер не потрапляють.
+const MY_LOCATION_ZOOM = 9;
+const MY_LOCATION_STORAGE_KEY = 'my-location-enabled';
+const MY_LOCATION_LAYERS = ['my-location-accuracy-fill', 'my-location-accuracy-line'];
+let myLocationMarker = null;
+let myLocationWatchId = null;
+let followingMyLocation = false;
+
+function setFollowingMyLocation(on, remember = true) {
+  followingMyLocation = on;
+  if (remember) {
+    try { localStorage.setItem(MY_LOCATION_STORAGE_KEY, on ? '1' : '0'); } catch (_) {}
+  }
+  const btn = document.getElementById('myLocationBtn');
+  btn?.classList.toggle('is-active', on);
+  if (!on) {
+    if (myLocationWatchId !== null) {
+      navigator.geolocation.clearWatch(myLocationWatchId);
+      myLocationWatchId = null;
+    }
+    myLocationMarker?.remove();
+    myLocationMarker = null;
+    map.getSource('my-location-accuracy')?.setData(emptyFeatureCollection());
+    if (btn) btn.textContent = '◉ Я ТУТ';
+  }
+}
+
+function addMyLocationLayers() {
+  // Стиль може бути ще не готовий, якщо кнопку натиснули одразу після
+  // відкриття: addSource у такому стані кидає виняток.
+  if (!map.isStyleLoaded() || map.getSource('my-location-accuracy')) return;
+  map.addSource('my-location-accuracy', { type: 'geojson', data: emptyFeatureCollection() });
+  // Холодний колір: моє положення не має читатися як загроза.
+  map.addLayer({
+    id: 'my-location-accuracy-fill',
+    type: 'fill',
+    source: 'my-location-accuracy',
+    paint: { 'fill-color': '#7fd4ff', 'fill-opacity': 0.12 }
+  });
+  map.addLayer({
+    id: 'my-location-accuracy-line',
+    type: 'line',
+    source: 'my-location-accuracy',
+    paint: { 'line-color': '#a8e4ff', 'line-width': 1.2, 'line-opacity': 0.65 }
+  });
+}
+
+function renderMyLocation(position, recenter) {
+  const lat = Number(position?.coords?.latitude);
+  const lon = Number(position?.coords?.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+  // Коло точності — необов'язкове: якщо шар ще не створено, маркер усе одно
+  // з'явиться, а коло додасться наступним оновленням позиції.
+  addMyLocationLayers();
+  const accuracyKm = Math.max(0.05, (Number(position.coords.accuracy) || 0) / 1000);
+  map.getSource('my-location-accuracy')?.setData({
+    type: 'FeatureCollection',
+    features: [{ type: 'Feature', properties: {}, geometry: circlePolygon(lat, lon, accuracyKm) }]
+  });
+
+  if (!myLocationMarker) {
+    const el = document.createElement('div');
+    el.className = 'my-location-marker';
+    el.innerHTML = '<span class="my-location-pulse"></span><span class="my-location-dot"></span>';
+    myLocationMarker = new maplibregl.Marker({ element: el, anchor: 'center' });
+    myLocationMarker.setLngLat([lon, lat]).addTo(map);
+  } else {
+    myLocationMarker.setLngLat([lon, lat]);
+  }
+
+  if (recenter) {
+    clearTimeout(returnTimer);
+    map.flyTo({ center: [lon, lat], zoom: MY_LOCATION_ZOOM, duration: 1400, essential: true });
+  }
+}
+
+function myLocationError(error) {
+  const btn = document.getElementById('myLocationBtn');
+  const text = error?.code === 1 ? 'ДОСТУП ЗАБОРОНЕНО'
+             : error?.code === 3 ? 'ЧАС ВИЙШОВ'
+             : 'МІСЦЕ НЕВІДОМЕ';
+  console.warn('Геолокація недоступна:', error?.message || error);
+  setFollowingMyLocation(false);
+  if (btn) {
+    btn.textContent = text;
+    setTimeout(() => { if (!followingMyLocation) btn.textContent = '◉ Я ТУТ'; }, 3000);
+  }
+}
+
+function toggleMyLocation() {
+  const btn = document.getElementById('myLocationBtn');
+  if (followingMyLocation) { setFollowingMyLocation(false); return; }
+
+  if (!navigator.geolocation) {
+    if (btn) btn.textContent = 'НЕ ПІДТРИМУЄТЬСЯ';
+    return;
+  }
+  // Геолокація працює лише в захищеному контексті (HTTPS або localhost).
+  if (!window.isSecureContext) {
+    if (btn) btn.textContent = 'ПОТРІБЕН HTTPS';
+    setTimeout(() => { btn.textContent = '◉ Я ТУТ'; }, 3000);
+    return;
+  }
+
+  if (btn) btn.textContent = 'ПОШУК...';
+  navigator.geolocation.getCurrentPosition(
+    position => {
+      setFollowingMyLocation(true);
+      if (btn) btn.textContent = '◉ Я ТУТ';
+      renderMyLocation(position, true);
+      // Далі стежимо за переміщенням, але камеру більше не смикаємо.
+      myLocationWatchId = navigator.geolocation.watchPosition(
+        p => renderMyLocation(p, false),
+        myLocationError,
+        { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
+      );
+    },
+    myLocationError,
+    { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+  );
+}
+
+document.getElementById('myLocationBtn')?.addEventListener('click', toggleMyLocation);
+
+// Відновлення після перезавантаження. Запитуємо позицію самі лише тоді, коли
+// дозвіл УЖЕ надано: інакше сторінка при відкритті кидала б у обличчя
+// системний запит, якого користувач не просив.
+async function restoreMyLocation() {
+  let saved = '0';
+  try { saved = localStorage.getItem(MY_LOCATION_STORAGE_KEY) || '0'; } catch (_) {}
+  if (saved !== '1' || !navigator.geolocation || !window.isSecureContext) return;
+
+  try {
+    const status = await navigator.permissions?.query({ name: 'geolocation' });
+    if (status && status.state !== 'granted') return;
+  } catch (_) {
+    // Permissions API немає — краще не вгадувати й не турбувати запитом.
+    return;
+  }
+  toggleMyLocation();
+}
+
+map.on('load', restoreMyLocation);
+
+document.getElementById('homeBtn').addEventListener('click', () => {
+  setFollowingMyLocation(false);
+  returnToUkraine(true);
+});
 document.getElementById('styleBtn').addEventListener('click', () => {
   document.body.classList.toggle('alt');
   // Тонування тепер у paint растрового шару, тож перемикач класу сам собою
