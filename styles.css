@@ -79,6 +79,10 @@ body {
   mix-blend-mode: screen;
   animation: sweep 7s linear infinite;
   transform-origin: center;
+  /* Друга така сама розгортка є в #radarOverlay. Дві повноекранні анімації
+     conic-gradient із blur і screen-змішуванням — надто дорого для телефона,
+     а візуально вони просто накладались. Лишаємо ту, що в overlay. */
+  display: none;
 }
 @keyframes sweep {
   to { transform: translate(-50%, -50%) rotate(360deg); }
@@ -726,4 +730,23 @@ body.has-oblast-alert .reticle { opacity: .16; }
 }
 @media (prefers-reduced-motion: reduce) {
   .radar-btn.is-armed { animation: none; border-color: rgba(168, 228, 255, .9); }
+}
+
+
+/* --- Полегшення для мобільних -------------------------------------------
+   Повноекранні шари з mix-blend-mode і backdrop-filter змушують браузер
+   перезмішувати великі поверхні щокадру. На телефоні це головна причина
+   ривків, тож там лишаємо тільки прозорість. */
+@media (max-width: 900px), (pointer: coarse) {
+  .radar-grid { mix-blend-mode: normal; opacity: .12; }
+  .scanlines { display: none; }
+  #radarOverlay .sweep { filter: none; mix-blend-mode: normal; }
+  #radarOverlay::after { display: none; }
+  #radarOverlay .rings { filter: none; }
+  .threat-count, .hud-top .live-status { backdrop-filter: none; }
+
+  /* Пульсація навколо кожної цілі — окремий композитний шар на маркер.
+     При масованому нальоті це десятки паралельних анімацій. */
+  .live-threat-pulse { animation: none; opacity: .3; }
+  .live-threat-marker { filter: none; }
 }

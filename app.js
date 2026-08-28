@@ -116,8 +116,14 @@ let backgroundWorkStarted = false;
 
 // Позиції цілей перераховуються ~10 разів на секунду, а не на кожному кадрі:
 // на масштабі карти різниця з 60 fps непомітна, а роботи вшестеро менше.
-const THREAT_FRAME_INTERVAL_MS = 100;
+// На телефоні даємо маркерам удвічі рідший темп: там і процесор слабший, і
+// екран менший, тож різниці не видно, а головний потік дихає вільніше.
+const IS_SMALL_SCREEN = typeof matchMedia === 'function'
+  && matchMedia('(max-width: 900px), (pointer: coarse)').matches;
+const THREAT_FRAME_INTERVAL_MS = IS_SMALL_SCREEN ? 200 : 100;
+const UNCERTAINTY_REBUILD_MS = IS_SMALL_SCREEN ? 2000 : 1000;
 let lastThreatFrameAt = 0;
+let lastUncertaintyRebuildAt = 0;
 
 const THREAT_META = {
   uav:       { label: 'ШАХЕД / БПЛА', short: 'БПЛА', color: '#ff4d4d', iconKey: 'uav' },
@@ -454,7 +460,9 @@ function trailsToGeoJSON() {
 
 // Коло невизначеності будуємо як полігон, а не circle-шар: радіус у кілометрах
 // лишається правильним на будь-якому масштабі без перерахунку в пікселі.
-const UNCERTAINTY_CIRCLE_SEGMENTS = 48;
+// 28 сегментів замість 48: на радіусах 2–70 км різниці на око немає, а вершин
+// у геометрії вдвічі менше — це прямо зменшує роботу тесселятора.
+const UNCERTAINTY_CIRCLE_SEGMENTS = IS_SMALL_SCREEN ? 20 : 28;
 
 function circlePolygon(lat, lon, radiusKm, segments = UNCERTAINTY_CIRCLE_SEGMENTS) {
   const ring = [];
@@ -743,8 +751,13 @@ function renderThreatsFrame(timestamp = 0) {
     }
   }
 
-  // Кола невизначеності рухаються разом із цілями лише коли хтось насправді рухається.
-  if (anyThreatExtrapolating) {
+  // Кола невизначеності — окремим, набагато рідшим темпом. Кожен setData
+  // змушує MapLibre заново розібрати й тесселювати геометрію в головному
+  // потоці; на 10 Гц це підвішувало телефон. Ціль зміщується щонайбільше на
+  // кілька кілометрів за хвилину, тож раз на секунду цілком достатньо — на
+  // око різниці немає, роботи вдесятеро менше.
+  if (anyThreatExtrapolating && now - lastUncertaintyRebuildAt >= UNCERTAINTY_REBUILD_MS) {
+    lastUncertaintyRebuildAt = now;
     map.getSource('neptun-threat-uncertainty')?.setData(uncertaintyToGeoJSON(now));
   }
 }
@@ -944,25 +957,44 @@ function itemTokens(item) {
   return new Set(values.flatMap(tokenVariants));
 }
 
+// Токени полігона не змінюються ніколи, тож рахуємо їх один раз і кешуємо на
+// самому об'єкті. Раніше вони перебудовувались для КОЖНОЇ пари «полігон ×
+// тривога»: 136 полігонів × 58 тривог давали десятки тисяч викликів
+// normalize('NFKC') кожні три секунди й підвішували головний потік.
 function featureTokens(feature) {
+  if (feature.__tokens) return feature.__tokens;
   const p = feature?.properties || {};
   const values = [
     p.key, p.name, p.NAME_1, p.NAME_2, p.name_uk, p.name_ua,
     p.oblast, p.raion, p.district, p.region, p.admin_name,
     p.ADM1_UA, p.ADM2_UA, p.shapeName
   ];
-  return new Set(values.flatMap(tokenVariants));
+  const tokens = new Set(values.flatMap(tokenVariants));
+  // Некопійована властивість: не потрапить у JSON.stringify і в setData.
+  Object.defineProperty(feature, '__tokens', { value: tokens, enumerable: false });
+  return tokens;
+}
+
+// Один спільний набір токенів на весь список тривог — замість перебудови
+// всередині циклу по полігонах.
+function itemsTokenSet(items) {
+  const set = new Set();
+  for (const item of items || []) {
+    for (const token of itemTokens(item)) set.add(token);
+  }
+  return set;
+}
+
+function featureMatchesTokenSet(feature, tokenSet) {
+  if (!tokenSet.size) return false;
+  for (const token of featureTokens(feature)) {
+    if (tokenSet.has(token)) return true;
+  }
+  return false;
 }
 
 function featureMatchesItems(feature, items) {
-  const fTokens = featureTokens(feature);
-  if (!fTokens.size) return false;
-  return items.some(item => {
-    for (const token of itemTokens(item)) {
-      if (fTokens.has(token)) return true;
-    }
-    return false;
-  });
+  return featureMatchesTokenSet(feature, itemsTokenSet(items));
 }
 
 function emptyFeatureCollection() {
@@ -1010,11 +1042,14 @@ function applyNeptunAlerts(payload = {}) {
 
   // Важно: районная тревога подсвечивает только район, а не всю область.
   // Целая область подсвечивается только тогда, когда она есть в payload.oblasts.
+  // Набори токенів будуємо по одному разу на оновлення, а не на кожен полігон.
+  const raionTokens = itemsTokenSet(activeRaions);
+  const oblastTokens = itemsTokenSet(activeOblasts);
   const raionFeatures = (neptunRaionsGeoJSON?.features || []).filter(feature =>
-    featureMatchesItems(feature, activeRaions)
+    featureMatchesTokenSet(feature, raionTokens)
   );
   const oblastFeatures = (neptunOblastsGeoJSON?.features || []).filter(feature =>
-    featureMatchesItems(feature, activeOblasts)
+    featureMatchesTokenSet(feature, oblastTokens)
   );
 
   map.getSource('neptun-alert-raions')?.setData({
