@@ -1509,6 +1509,7 @@ map.on('resize', () => map.fire('move'));
 const MY_LOCATION_ZOOM = 9;
 const MY_LOCATION_STORAGE_KEY = 'my-location-enabled';
 const MY_LOCATION_LAYERS = ['my-location-accuracy-fill', 'my-location-accuracy-line'];
+const MY_LOCATION_WATCH_OPTS = { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 };
 let myLocationMarker = null;
 let myLocationWatchId = null;
 let followingMyLocation = false;
@@ -1582,6 +1583,8 @@ function renderMyLocation(position, recenter) {
   }
 }
 
+// Помилка ПЕРШОГО запиту: користувач натиснув кнопку й нічого не отримав.
+// Тут вимкнення й скидання збереженого вибору доречні.
 function myLocationError(error) {
   const btn = document.getElementById('myLocationBtn');
   const text = error?.code === 1 ? 'ДОСТУП ЗАБОРОНЕНО'
@@ -1594,6 +1597,36 @@ function myLocationError(error) {
     setTimeout(() => { if (!followingMyLocation) btn.textContent = '◉ Я ТУТ'; }, 3000);
   }
 }
+
+// Помилка під час СТЕЖЕННЯ — на мобільному це буденність: тунель, підвал,
+// ліфт, збій GPS. Раніше будь-який такий збій вимикав функцію й затирав
+// збережений вибір на '0'. Тепер вимикаємось лише коли дозвіл справді
+// відкликано (code 1), решту просто перечікуємо.
+function myLocationWatchError(error) {
+  if (error?.code === 1) {
+    myLocationError(error);
+    return;
+  }
+  console.warn('Геолокація: тимчасовий збій стеження, не вимикаю:', error?.message || error);
+}
+
+// Мобільні браузери приспиняють watchPosition, коли сторінка йде у фон, і
+// після повернення він може вже не оживати. Перепідписуємось.
+function refreshMyLocationWatch() {
+  if (!followingMyLocation || !navigator.geolocation) return;
+  if (myLocationWatchId !== null) {
+    try { navigator.geolocation.clearWatch(myLocationWatchId); } catch (_) {}
+  }
+  myLocationWatchId = navigator.geolocation.watchPosition(
+    p => renderMyLocation(p, false),
+    myLocationWatchError,
+    MY_LOCATION_WATCH_OPTS
+  );
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refreshMyLocationWatch();
+});
 
 // recenter=false — для відновлення після перезавантаження: маркер показуємо,
 // але камеру не чіпаємо. Наближає карту лише свідоме натискання кнопки.
@@ -1621,8 +1654,8 @@ function toggleMyLocation(recenter = true) {
       // Далі стежимо за переміщенням, але камеру більше не смикаємо.
       myLocationWatchId = navigator.geolocation.watchPosition(
         p => renderMyLocation(p, false),
-        myLocationError,
-        { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
+        myLocationWatchError,
+        MY_LOCATION_WATCH_OPTS
       );
     },
     myLocationError,
@@ -1640,12 +1673,18 @@ async function restoreMyLocation() {
   try { saved = localStorage.getItem(MY_LOCATION_STORAGE_KEY) || '0'; } catch (_) {}
   if (saved !== '1' || !navigator.geolocation || !window.isSecureContext) return;
 
+  // Де Permissions API є (Chrome, Firefox, Android) — відновлюємо лише при
+  // вже наданому дозволі, тобто системного запиту гарантовано не буде.
+  // Safari на iOS цей API для геолокації не підтримує й кидає виняток; раніше
+  // ми там просто здавались, тож на айфоні позиція не відновлювалась ніколи.
+  // Якщо перевірити неможливо — все одно пробуємо: користувач сам вмикав
+  // функцію раніше, а за наявного дозволу запит проходить без діалогу.
   try {
     const status = await navigator.permissions?.query({ name: 'geolocation' });
-    if (status && status.state !== 'granted') return;
+    if (status && status.state === 'denied') return;
+    if (status && status.state === 'prompt') return;
   } catch (_) {
-    // Permissions API немає — краще не вгадувати й не турбувати запитом.
-    return;
+    // Перевірка недоступна — рухаємось далі.
   }
   // Без наближення: при відкритті сторінки карта має лишатись на огляді країни.
   toggleMyLocation(false);
