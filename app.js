@@ -1595,7 +1595,9 @@ function myLocationError(error) {
   }
 }
 
-function toggleMyLocation() {
+// recenter=false — для відновлення після перезавантаження: маркер показуємо,
+// але камеру не чіпаємо. Наближає карту лише свідоме натискання кнопки.
+function toggleMyLocation(recenter = true) {
   const btn = document.getElementById('myLocationBtn');
   if (followingMyLocation) { setFollowingMyLocation(false); return; }
 
@@ -1615,7 +1617,7 @@ function toggleMyLocation() {
     position => {
       setFollowingMyLocation(true);
       if (btn) btn.textContent = '◉ Я ТУТ';
-      renderMyLocation(position, true);
+      renderMyLocation(position, recenter);
       // Далі стежимо за переміщенням, але камеру більше не смикаємо.
       myLocationWatchId = navigator.geolocation.watchPosition(
         p => renderMyLocation(p, false),
@@ -1628,7 +1630,7 @@ function toggleMyLocation() {
   );
 }
 
-document.getElementById('myLocationBtn')?.addEventListener('click', toggleMyLocation);
+document.getElementById('myLocationBtn')?.addEventListener('click', () => toggleMyLocation(true));
 
 // Відновлення після перезавантаження. Запитуємо позицію самі лише тоді, коли
 // дозвіл УЖЕ надано: інакше сторінка при відкритті кидала б у обличчя
@@ -1645,7 +1647,8 @@ async function restoreMyLocation() {
     // Permissions API немає — краще не вгадувати й не турбувати запитом.
     return;
   }
-  toggleMyLocation();
+  // Без наближення: при відкритті сторінки карта має лишатись на огляді країни.
+  toggleMyLocation(false);
 }
 
 map.on('load', restoreMyLocation);
