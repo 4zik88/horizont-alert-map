@@ -713,3 +713,17 @@ body.has-oblast-alert .reticle { opacity: .16; }
 @media (prefers-reduced-motion: reduce) {
   .my-location-pulse { animation: none; opacity: .35; }
 }
+
+/* Вибір «Я ТУТ» збережено, але дозволу браузера бракує для автоматичного
+   відновлення — кнопка пульсує, показуючи, що чекає одного дотику. */
+.radar-btn.is-armed {
+  border-color: rgba(168, 228, 255, .55);
+  color: #cfeaff;
+  animation: armed-blink 2s ease-in-out infinite;
+}
+@keyframes armed-blink {
+  50% { border-color: rgba(168, 228, 255, .95); box-shadow: 0 0 14px rgba(127, 212, 255, .35); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .radar-btn.is-armed { animation: none; border-color: rgba(168, 228, 255, .9); }
+}

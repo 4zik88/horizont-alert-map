@@ -1521,6 +1521,7 @@ function setFollowingMyLocation(on, remember = true) {
   }
   const btn = document.getElementById('myLocationBtn');
   btn?.classList.toggle('is-active', on);
+  if (on) btn?.classList.remove('is-armed');
   if (!on) {
     if (myLocationWatchId !== null) {
       navigator.geolocation.clearWatch(myLocationWatchId);
@@ -1668,24 +1669,65 @@ document.getElementById('myLocationBtn')?.addEventListener('click', () => toggle
 // Відновлення після перезавантаження. Запитуємо позицію самі лише тоді, коли
 // дозвіл УЖЕ надано: інакше сторінка при відкритті кидала б у обличчя
 // системний запит, якого користувач не просив.
+// Вибір збережено, але відновити автоматично не можна (дозвіл ще не наданий
+// або є лише на один раз). Показуємо це кнопкою: одне натискання поверне все.
+function setMyLocationArmed(armed, reason) {
+  const btn = document.getElementById('myLocationBtn');
+  if (!btn) return;
+  btn.classList.toggle('is-armed', armed);
+  btn.title = armed
+    ? 'Позицію запам\'ятано — торкніться, щоб показати знову'
+    : 'Показати моє місцезнаходження';
+  if (armed) myLocationLog('очікує дотику:', reason);
+}
+
+// Діагностика вмикається адресою ?debug=1 — щоб можна було подивитись на
+// телефоні, де саме обривається відновлення.
+const MY_LOCATION_DEBUG = new URLSearchParams(location.search).get('debug') === '1';
+function myLocationLog(...args) {
+  if (MY_LOCATION_DEBUG) console.log('[Я ТУТ]', ...args);
+}
+
 async function restoreMyLocation() {
   let saved = '0';
-  try { saved = localStorage.getItem(MY_LOCATION_STORAGE_KEY) || '0'; } catch (_) {}
+  try { saved = localStorage.getItem(MY_LOCATION_STORAGE_KEY) || '0'; } catch (err) {
+    myLocationLog('localStorage недоступний:', err?.message);
+  }
+  myLocationLog('збережений стан:', saved, '| secure:', window.isSecureContext,
+                '| geolocation:', !!navigator.geolocation);
   if (saved !== '1' || !navigator.geolocation || !window.isSecureContext) return;
 
-  // Де Permissions API є (Chrome, Firefox, Android) — відновлюємо лише при
-  // вже наданому дозволі, тобто системного запиту гарантовано не буде.
-  // Safari на iOS цей API для геолокації не підтримує й кидає виняток; раніше
-  // ми там просто здавались, тож на айфоні позиція не відновлювалась ніколи.
-  // Якщо перевірити неможливо — все одно пробуємо: користувач сам вмикав
-  // функцію раніше, а за наявного дозволу запит проходить без діалогу.
+  // Де Permissions API є — відновлюємо лише при вже наданому дозволі, тобто
+  // системного запиту гарантовано не буде. Safari на iOS цей API для
+  // геолокації не підтримує й кидає виняток; тоді пробуємо напряму, бо за
+  // наявного дозволу запит проходить без діалогу.
+  let state = null;
   try {
     const status = await navigator.permissions?.query({ name: 'geolocation' });
-    if (status && status.state === 'denied') return;
-    if (status && status.state === 'prompt') return;
-  } catch (_) {
-    // Перевірка недоступна — рухаємось далі.
+    state = status?.state ?? null;
+    // Chrome дає ще й дозвіл «лише цього разу»: після перезавантаження він
+    // повертається в prompt. Слухаємо зміну, щоб піднятись самим, щойно
+    // дозвіл стане постійним.
+    if (status && !status.__horizonBound) {
+      status.__horizonBound = true;
+      status.addEventListener?.('change', () => {
+        myLocationLog('дозвіл змінився на:', status.state);
+        if (status.state === 'granted') restoreMyLocation();
+        if (status.state === 'denied') setMyLocationArmed(false);
+      });
+    }
+  } catch (err) {
+    myLocationLog('Permissions API недоступний:', err?.message);
   }
+  myLocationLog('стан дозволу:', state);
+
+  if (state === 'denied' || state === 'prompt') {
+    // Вибір не втрачено — просто потрібне одне свідоме дотикання.
+    setMyLocationArmed(true, state);
+    return;
+  }
+
+  setMyLocationArmed(false);
   // Без наближення: при відкритті сторінки карта має лишатись на огляді країни.
   toggleMyLocation(false);
 }
