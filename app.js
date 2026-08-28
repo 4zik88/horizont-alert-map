@@ -1512,6 +1512,7 @@ const MY_LOCATION_LAYERS = ['my-location-accuracy-fill', 'my-location-accuracy-l
 const MY_LOCATION_WATCH_OPTS = { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 };
 let myLocationMarker = null;
 let myLocationWatchId = null;
+let lastMyPosition = null;
 let followingMyLocation = false;
 
 function setFollowingMyLocation(on, remember = true) {
@@ -1558,6 +1559,7 @@ function renderMyLocation(position, recenter) {
   const lat = Number(position?.coords?.latitude);
   const lon = Number(position?.coords?.longitude);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  lastMyPosition = position;
 
   // Коло точності — необов'язкове: якщо шар ще не створено, маркер усе одно
   // з'явиться, а коло додасться наступним оновленням позиції.
@@ -1732,7 +1734,18 @@ async function restoreMyLocation() {
   toggleMyLocation(false);
 }
 
-map.on('load', restoreMyLocation);
+// Відновлення НЕ чекає на подію load карти. Раніше воно висіло саме на ній, і
+// на телефоні це означало, що стан просто не відновлювався: подія настає лише
+// після відмальовки перших тайлів, а при повільній мережі, згорнутому браузері
+// чи збої тайлів вона може не настати взагалі. Маркеру карта потрібна лише як
+// система координат, а коло точності й так чекає на isStyleLoaded().
+restoreMyLocation();
+
+// Коли стиль нарешті готовий — домальовуємо коло точності для вже отриманої
+// позиції. Без цього при ранньому відновленні лишався б маркер без кола.
+map.on('load', () => {
+  if (followingMyLocation && lastMyPosition) renderMyLocation(lastMyPosition, false);
+});
 
 document.getElementById('homeBtn').addEventListener('click', () => {
   setFollowingMyLocation(false);
