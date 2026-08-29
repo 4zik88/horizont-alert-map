@@ -457,8 +457,11 @@ function predictedThreatPosition(threat, nowMs = correctedNow()) {
 }
 
 function threatsToGeoJSON(nowMs = Date.now()) {
-  const features = currentThreats
-    .filter(t => t && t.status !== 'resolved')
+  // Той самий список, що й у маркерів, трас і кіл невизначеності. Раніше цей шар
+  // єдиний брав currentThreats напряму, тож малював стрілку кожному повідомленню —
+  // і поодинокому неперевіреному, і застарілому. Саме звідси на карті бралися
+  // безіменні стрілки в місцях, яких немає в жодному каналі.
+  const features = visibleThreats(nowMs)
     .map(t => {
       const p = predictedThreatPosition(t, nowMs);
       if (!p) return null;
@@ -513,16 +516,27 @@ function activeThreats(nowMs = Date.now()) {
   return currentThreats.filter(t => t && t.status !== 'resolved' && !isStaleThreat(t, nowMs));
 }
 
-// Скільки незалежних підтверджень робить ціль вартою показу.
+// Скільки незалежних підтверджень робить ціль вартою показу. Вимога росте разом
+// із розмитістю позиції: «БпЛА за 4 км звідси» з двома джерелами — це ціль,
+// «БпЛА десь у колі 25 км» з двома джерелами — це ще чутка.
 const MIN_SOURCE_COUNT = 2;
+const VAGUE_POSITION_KM = 15;
+const MIN_SOURCE_COUNT_VAGUE = 3;
 
 // Відсіюємо саме неперевірені поодинокі повідомлення, а не все підряд.
 // Фільтр по lifecycle був помилкою: NEPTUN позначає 'uncertain' навіть цілі
 // з п'ятьма незалежними підтвердженнями, тож карта лишалась майже порожньою,
 // поки в небі були десятки дронів. sourceCount відображає реальність краще.
 function isTrustedThreat(threat) {
+  // areaOnly — це не ціль. NEPTUN прямо пише «попередження по області, точка
+  // невідома», а ми ставили маркер у геометричний центр області: місце, де за
+  // власним визнанням джерела нічого немає. Сама тривога вже показана заливкою
+  // області, тож фантомна точка не додає інформації, лише вигадує її.
+  if (isAreaOnlyThreat(threat)) return false;
   if (isConfirmedThreat(threat)) return true;
-  return (Number(threat?.sourceCount) || 0) >= MIN_SOURCE_COUNT;
+  const uncertaintyKm = threatUncertaintyKm(threat) || 0;
+  const needed = uncertaintyKm > VAGUE_POSITION_KM ? MIN_SOURCE_COUNT_VAGUE : MIN_SOURCE_COUNT;
+  return (Number(threat?.sourceCount) || 0) >= needed;
 }
 
 function visibleThreats(nowMs = Date.now()) {
