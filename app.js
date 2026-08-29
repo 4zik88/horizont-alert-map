@@ -172,6 +172,26 @@ function destinationPoint(lat, lon, bearingDeg, distanceKm) {
 // це локальна оцінка, а не вимір. Тримаємо вікно екстраполяції коротким: раніше
 // БПЛА «летів» на вигаданих 160 км/год до 12 хвилин, тобто до 32 км вигадки.
 const EXTRAPOLATION_MAX_MINUTES = 2;
+
+// Розбіжність між годинником пристрою й сервером NEPTUN. Екстраполяція
+// рахується від updatedAt до «зараз»; якщо телефон поспішає на 5 хвилин, кожна
+// ціль отримує 13 зайвих кілометрів зсуву. serverTime приходить у кожній
+// відповіді й досі не використовувався.
+let serverClockOffsetMs = 0;
+// Дрібну різницю ігноруємо: це мережева затримка, а не зсув годинника.
+const CLOCK_OFFSET_MIN_MS = 2000;
+
+function updateServerClockOffset(serverTimeIso) {
+  const serverMs = Date.parse(serverTimeIso || '');
+  if (!Number.isFinite(serverMs)) return;
+  const offset = serverMs - Date.now();
+  serverClockOffsetMs = Math.abs(offset) < CLOCK_OFFSET_MIN_MS ? 0 : offset;
+}
+
+// Час, від якого рахуємо рух: годинник пристрою, виправлений на зсув.
+function correctedNow() {
+  return Date.now() + serverClockOffsetMs;
+}
 // Для оцінки за типом вікно коротше: помилка накопичується швидше.
 const EXTRAPOLATION_MAX_MINUTES_ESTIMATED = 1;
 
@@ -252,6 +272,57 @@ const TRAIL_SPEED_MIN_SECONDS = 60;
 const TRAIL_SPEED_MAX_SECONDS = 3600;
 const TRAIL_SPEED_MIN_KMH = 15;
 
+// Власна історія позицій. NEPTUN присилає trail лише у 2–4 цілей із 20, але ту
+// саму ціль ми бачимо кожні 5 секунд — тож за хвилину маємо власний трек для
+// КОЖНОЇ, а не для десятої частини. Це замінює вигадану швидкість виміряною.
+const OWN_TRAIL_MAX_POINTS = 24;
+const OWN_TRAIL_MAX_AGE_MS = 12 * 60 * 1000;
+// Менше — це шум GPS-повідомлень, а не рух.
+const OWN_TRAIL_MIN_STEP_KM = 0.3;
+const ownTrails = new Map();
+
+function recordThreatPositions() {
+  const now = correctedNow();
+  const seen = new Set();
+  for (const threat of currentThreats) {
+    if (!threat || threat.status === 'resolved') continue;
+    const id = String(threat.id || '');
+    const lat = Number(threat.lat), lon = Number(threat.lon);
+    if (!id || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    seen.add(id);
+
+    // Прив'язуємось до updatedAt, а не до часу отримання: та сама координата
+    // може прийти кілька разів поспіль, і це не означає, що ціль стояла.
+    const stamp = Date.parse(threat.updatedAt || '') || now;
+    const points = ownTrails.get(id) || [];
+    const last = points[points.length - 1];
+    if (last) {
+      if (last.t === stamp) continue;
+      if (distanceKmBetween(last.lat, last.lon, lat, lon) < OWN_TRAIL_MIN_STEP_KM) continue;
+    }
+    points.push({ lat, lon, t: stamp });
+    while (points.length > OWN_TRAIL_MAX_POINTS) points.shift();
+    while (points.length && now - points[0].t > OWN_TRAIL_MAX_AGE_MS) points.shift();
+    ownTrails.set(id, points);
+  }
+  // Ціль зникла зі стрічки — прибираємо її історію, щоб мапа не росла.
+  for (const id of ownTrails.keys()) if (!seen.has(id)) ownTrails.delete(id);
+}
+
+// Швидкість із власної історії. Беремо довгу базу (перша й остання точки):
+// сусідні точки шумні й дають стрибки на сотні км/год.
+function ownTrailSpeedKmh(threat, ceilingKmh) {
+  const points = ownTrails.get(String(threat?.id || ''));
+  if (!points || points.length < 2) return null;
+  const first = points[0], last = points[points.length - 1];
+  const seconds = (last.t - first.t) / 1000;
+  if (seconds < TRAIL_SPEED_MIN_SECONDS || seconds > TRAIL_SPEED_MAX_SECONDS) return null;
+  const kmh = distanceKmBetween(first.lat, first.lon, last.lat, last.lon) / (seconds / 3600);
+  if (!Number.isFinite(kmh) || kmh < TRAIL_SPEED_MIN_KMH) return null;
+  const ceiling = (ceilingKmh || 0) > 0 ? ceilingKmh * 1.5 : kmh;
+  return Math.min(kmh, ceiling);
+}
+
 function trailDerivedSpeedKmh(threat, typeSpeedKmh) {
   const trail = Array.isArray(threat?.trail) ? threat.trail : [];
   if (trail.length < 2) return null;
@@ -286,13 +357,21 @@ function fallbackMotionForThreat(threat) {
   const hint = channelSpeedHint(threat);
   const range = hint ? CHANNEL_SPEED[hint] : (TYPE_SPEED[type] || TYPE_SPEED.unknown);
   const hasExplicitVelocity = Number.isFinite(explicitSpeed) && explicitSpeed > 0;
-  const trailSpeed = hasExplicitVelocity ? null : trailDerivedSpeedKmh(threat, range.max);
+  // Власна історія має перевагу над коротким треком зі стрічки: вона щільніша
+  // й довша, бо накопичується з кожного опитування.
+  const ownSpeed = hasExplicitVelocity ? null : ownTrailSpeedKmh(threat, range.max);
+  const trailSpeed = (hasExplicitVelocity || ownSpeed !== null)
+    ? null : trailDerivedSpeedKmh(threat, range.max);
 
-  // Пріоритет: справжня швидкість зі стрічки → виміряна з треку → оцінка за типом.
+  // Пріоритет: швидкість зі стрічки → власний трек → трек NEPTUN → оцінка за типом.
   const speedKmh = hasExplicitVelocity ? explicitSpeed
-    : (trailSpeed !== null ? trailSpeed : range.typical);
+    : ownSpeed !== null ? ownSpeed
+    : trailSpeed !== null ? trailSpeed
+    : range.typical;
   const speedSource = hasExplicitVelocity ? 'feed'
-    : (trailSpeed !== null ? 'trail' : 'type');
+    : ownSpeed !== null ? 'own'
+    : trailSpeed !== null ? 'trail'
+    : 'type';
   const measured = speedSource !== 'type';
 
   // Невідома швидкість = невідома позиція. Для оцінки за типом беремо найбільше
@@ -315,7 +394,7 @@ function fallbackMotionForThreat(threat) {
   };
 }
 
-function predictedThreatPosition(threat, nowMs = Date.now()) {
+function predictedThreatPosition(threat, nowMs = correctedNow()) {
   const lat = Number(threat?.lat);
   const lon = Number(threat?.lon);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
@@ -614,6 +693,7 @@ function closeThreatPopup() {
 function speedRow(position, hasCourse) {
   if (!(position.speedKmh > 0)) return null;
   if (position.speedSource === 'feed') return `Швидкість: ~${Math.round(position.speedKmh)} км/год (зі стрічки)`;
+  if (position.speedSource === 'own') return `Швидкість: ~${Math.round(position.speedKmh)} км/год (виміряна)`;
   if (position.speedSource === 'trail') return `Швидкість: ~${Math.round(position.speedKmh)} км/год (з треку)`;
   if (!hasCourse) return null;
   const range = `${Math.round(position.speedMinKmh)}–${Math.round(position.speedMaxKmh)} км/год`;
@@ -627,7 +707,7 @@ function showThreatPopup(threat, marker) {
   const updated = threat.updatedAt
     ? new Date(threat.updatedAt).toLocaleTimeString('uk-UA', { timeZone: 'Europe/Kyiv', hour: '2-digit', minute: '2-digit', second: '2-digit' })
     : '—';
-  const position = predictedThreatPosition(threat, Date.now());
+  const position = predictedThreatPosition(threat, correctedNow());
   if (!position) return;
 
   const quality = String(threat.positionQuality || '').toLowerCase();
@@ -783,7 +863,7 @@ function renderThreatsFrame(timestamp = 0) {
   if (timestamp && timestamp - lastThreatFrameAt < THREAT_FRAME_INTERVAL_MS) return;
   lastThreatFrameAt = timestamp;
 
-  const now = Date.now();
+  const now = correctedNow();
   for (const record of threatMarkers.values()) {
     const p = predictedThreatPosition(record.threat, now);
     if (!p) continue;
@@ -891,7 +971,9 @@ async function fetchNeptunThreats() {
   try {
     const payload = await fetchJSON(`/api/threats?t=${Date.now()}`);
     if (payload?.error) throw new Error(payload.error);
+    updateServerClockOffset(payload?.serverTime);
     currentThreats = Array.isArray(payload?.threats) ? payload.threats : [];
+    recordThreatPositions();
     syncThreatMarkers();
     refreshThreatGeometry();
     renderThreatCounter();
@@ -904,8 +986,10 @@ async function fetchNeptunThreats() {
 }
 
 function applyThreatSnapshot(snapshot = {}) {
+  updateServerClockOffset(snapshot?.serverTime);
   currentThreats = Array.isArray(snapshot?.threats) ? snapshot.threats : [];
   neptunLastSnapshotAt = Date.now();
+  recordThreatPositions();
   syncThreatMarkers();
   refreshThreatGeometry();
   renderThreatCounter(' • LIVE');
@@ -1035,6 +1119,51 @@ function featureMatchesItems(feature, items) {
   return featureMatchesTokenSet(feature, itemsTokenSet(items));
 }
 
+// І тривоги, і полігони мають готове поле key, і на живих даних воно збігається
+// повністю: 52 з 52 районних і 3 з 3 обласних. Пряма відповідність точна, тоді
+// як зіставлення за назвами — евристика з тихими промахами.
+// Токени лишаємо запасним варіантом на випадок, якщо ключ колись зникне.
+function matchAlertFeatures(collection, items) {
+  const features = collection?.features || [];
+  if (!features.length || !items?.length) return [];
+
+  const keys = new Set();
+  const withoutKey = [];
+  for (const item of items) {
+    const key = typeof item === 'string' ? item : item?.key;
+    if (key) keys.add(String(key).toLowerCase());
+    else withoutKey.push(item);
+  }
+
+  const matched = [];
+  const unmatchedKeys = new Set(keys);
+  for (const feature of features) {
+    const key = String(feature?.properties?.key || '').toLowerCase();
+    if (key && keys.has(key)) {
+      matched.push(feature);
+      unmatchedKeys.delete(key);
+    }
+  }
+
+  // Тільки те, що не знайшлося за ключем, доганяємо старою евристикою.
+  if (unmatchedKeys.size || withoutKey.length) {
+    const leftovers = items.filter(item => {
+      const key = typeof item === 'string' ? item : item?.key;
+      return !key || unmatchedKeys.has(String(key).toLowerCase());
+    });
+    const tokens = itemsTokenSet(leftovers);
+    const already = new Set(matched);
+    for (const feature of features) {
+      if (already.has(feature)) continue;
+      if (featureMatchesTokenSet(feature, tokens)) matched.push(feature);
+    }
+    if (unmatchedKeys.size) {
+      console.warn('Тривоги без збігу за ключем:', [...unmatchedKeys]);
+    }
+  }
+  return matched;
+}
+
 function emptyFeatureCollection() {
   return { type: 'FeatureCollection', features: [] };
 }
@@ -1083,15 +1212,8 @@ function applyNeptunAlerts(payload = {}) {
 
   // Важно: районная тревога подсвечивает только район, а не всю область.
   // Целая область подсвечивается только тогда, когда она есть в payload.oblasts.
-  // Набори токенів будуємо по одному разу на оновлення, а не на кожен полігон.
-  const raionTokens = itemsTokenSet(activeRaions);
-  const oblastTokens = itemsTokenSet(activeOblasts);
-  const raionFeatures = (neptunRaionsGeoJSON?.features || []).filter(feature =>
-    featureMatchesTokenSet(feature, raionTokens)
-  );
-  const oblastFeatures = (neptunOblastsGeoJSON?.features || []).filter(feature =>
-    featureMatchesTokenSet(feature, oblastTokens)
-  );
+  const raionFeatures = matchAlertFeatures(neptunRaionsGeoJSON, activeRaions);
+  const oblastFeatures = matchAlertFeatures(neptunOblastsGeoJSON, activeOblasts);
 
   map.getSource('neptun-alert-raions')?.setData({
     type: 'FeatureCollection',
