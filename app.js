@@ -179,6 +179,35 @@ const EXTRAPOLATION_MAX_MINUTES_ESTIMATED = 1;
 // реактивний «Шахед» приходять як type:'uav', title:'БпЛА'. Тому одна константа
 // принципово не може бути правильною — тримаємо діапазон, а розкид переносимо
 // в коло невизначеності.
+// Канал розрізняє реактивні «шахеди», а NEPTUN — ні: у нього всі БпЛА
+// приходять як type:'uav', title:'БпЛА'. Коли канал каже, що над областю
+// реактивні, ми звужуємо діапазон замість того, щоб гадати на 120–600.
+const CHANNEL_URL_PATH = '/api/channel';
+const CHANNEL_INTERVAL_MS = 60000;
+// Допис старший за це вже не описує поточну обстановку.
+const CHANNEL_HINT_TTL_MS = 20 * 60 * 1000;
+const CHANNEL_SPEED = {
+  jet:  { typical: 520, min: 450, max: 620 },
+  prop: { typical: 170, min: 120, max: 220 }
+};
+let channelTimer = null;
+let channelPosts = [];
+// область → { jet: bool, at: мс }
+const channelOblastHints = new Map();
+
+function normalizeOblastName(value) {
+  return String(value || '').replace(/\s*область\s*$/iu, '').trim().toLowerCase();
+}
+
+// Повертає 'jet' | 'prop' | null для цілі, спираючись на свіжі згадки каналу.
+function channelSpeedHint(threat) {
+  if (String(threat?.type || '').toLowerCase() !== 'uav') return null;
+  const hint = channelOblastHints.get(normalizeOblastName(threat?.region));
+  if (!hint) return null;
+  if (Date.now() - hint.at > CHANNEL_HINT_TTL_MS) return null;
+  return hint.jet ? 'jet' : 'prop';
+}
+
 const TYPE_SPEED = {
   uav:       { typical: 180, min: 120, max: 600 },
   recon:     { typical: 120, min: 80,  max: 220 },
@@ -253,7 +282,9 @@ function fallbackMotionForThreat(threat) {
   const explicitSpeed = Number(threat?.velocity?.speedKmh ?? threat?.speedKmh ?? threat?.speed_kmh);
   const explicitBearing = Number(threat?.velocity?.bearingDeg ?? threat?.heading ?? threat?.bearing);
 
-  const range = TYPE_SPEED[type] || TYPE_SPEED.unknown;
+  // Підказка каналу має перевагу над типовим діапазоном: вона конкретніша.
+  const hint = channelSpeedHint(threat);
+  const range = hint ? CHANNEL_SPEED[hint] : (TYPE_SPEED[type] || TYPE_SPEED.unknown);
   const hasExplicitVelocity = Number.isFinite(explicitSpeed) && explicitSpeed > 0;
   const trailSpeed = hasExplicitVelocity ? null : trailDerivedSpeedKmh(threat, range.max);
 
@@ -273,6 +304,7 @@ function fallbackMotionForThreat(threat) {
   return {
     speedKmh,
     speedSource,
+    speedHint: hint,
     speedMinKmh: measured ? speedKmh : range.min,
     speedMaxKmh: measured ? speedKmh : range.max,
     speedSpreadKmh,
@@ -294,6 +326,7 @@ function predictedThreatPosition(threat, nowMs = Date.now()) {
   const speedInfo = {
     speedKmh: motion.speedKmh,
     speedSource: motion.speedSource,
+    speedHint: motion.speedHint,
     speedMinKmh: motion.speedMinKmh,
     speedMaxKmh: motion.speedMaxKmh
   };
@@ -394,9 +427,18 @@ function isStaleThreat(threat, nowMs = Date.now()) {
   return age !== null && age > STALE_THREAT_MINUTES;
 }
 
-// Єдине джерело правди про те, які цілі взагалі показуються й рахуються.
-function visibleThreats(nowMs = Date.now()) {
+// Актуальні цілі: не знято зі стрічки й не застаріли. Сюди входять і
+// непідтверджені — вони потрібні лічильнику, щоб було видно, скільки саме
+// повідомлень ми відсіяли.
+function activeThreats(nowMs = Date.now()) {
   return currentThreats.filter(t => t && t.status !== 'resolved' && !isStaleThreat(t, nowMs));
+}
+
+// Те, що потрапляє на карту: лише підтверджені. NEPTUN сам позначає більшість
+// цілей як lifecycle:'uncertain' — це поодинокі неперевірені повідомлення, і
+// саме вони створювали враження, що цілей набагато більше, ніж насправді.
+function visibleThreats(nowMs = Date.now()) {
+  return activeThreats(nowMs).filter(isConfirmedThreat);
 }
 
 // Дедуплікація для ЛІЧИЛЬНИКА. NEPTUN не зливає повідомлення різних спостерігачів
@@ -565,7 +607,10 @@ function speedRow(position, hasCourse) {
   if (position.speedSource === 'feed') return `Швидкість: ~${Math.round(position.speedKmh)} км/год (зі стрічки)`;
   if (position.speedSource === 'trail') return `Швидкість: ~${Math.round(position.speedKmh)} км/год (з треку)`;
   if (!hasCourse) return null;
-  return `Швидкість: ${Math.round(position.speedMinKmh)}–${Math.round(position.speedMaxKmh)} км/год (невідома, оцінка за типом)`;
+  const range = `${Math.round(position.speedMinKmh)}–${Math.round(position.speedMaxKmh)} км/год`;
+  if (position.speedHint === 'jet') return `Швидкість: ${range} (реактивний, за каналом)`;
+  if (position.speedHint === 'prop') return `Швидкість: ${range} (пропелерний, за каналом)`;
+  return `Швидкість: ${range} (невідома, оцінка за типом)`;
 }
 
 function showThreatPopup(threat, marker) {
@@ -775,7 +820,7 @@ function isConfirmedThreat(threat) {
 }
 
 function threatBreakdown(nowMs = Date.now()) {
-  const visible = visibleThreats(nowMs);
+  const visible = activeThreats(nowMs);
   const clusters = dedupeThreatClusters(visible, nowMs);
   const merged = visible.length - clusters.length;
 
@@ -1798,6 +1843,89 @@ window.addEventListener('resize', () => map.resize());
 
 
 
+// --- Стрічка каналу ---------------------------------------------------------
+// Повідомлення каналу НЕ стають цілями на карті: у них немає координат, а
+// «курсом на Вишгород» — це напрямок, а не позиція. Панель для читання
+// людиною, плюс ознака «реактивний», якою уточнюється швидкість.
+const channelFeed = document.getElementById('channelFeed');
+const channelList = document.getElementById('channelList');
+const channelStatus = document.getElementById('channelStatus');
+const channelToggle = document.getElementById('channelToggle');
+const channelTab = document.getElementById('channelTab');
+
+function escapeText(value) {
+  return String(value || '').replace(/[&<>"']/g,
+    ch => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[ch]));
+}
+
+function formatChannelTime(iso) {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return '';
+  return date.toLocaleTimeString('uk-UA',
+    { timeZone: 'Europe/Kyiv', hour: '2-digit', minute: '2-digit' });
+}
+
+function renderChannel(payload) {
+  const posts = Array.isArray(payload?.posts) ? payload.posts : [];
+  channelPosts = posts;
+
+  // Підказки про реактивні — по областях, зі свіжістю за часом допису.
+  channelOblastHints.clear();
+  for (const record of payload?.records || []) {
+    const key = normalizeOblastName(record.oblast);
+    if (!key) continue;
+    const at = Date.parse(record.time || '') || Date.now();
+    const prev = channelOblastHints.get(key);
+    if (!prev || at >= prev.at) channelOblastHints.set(key, { jet: !!record.jet, at });
+  }
+
+  if (!channelList) return;
+  channelList.textContent = '';
+  if (!posts.length) {
+    if (channelStatus) channelStatus.textContent = 'ПОВІДОМЛЕНЬ НЕМАЄ';
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  for (const post of [...posts].reverse()) {
+    const item = document.createElement('div');
+    item.className = 'channel-post' + (/реактивн/i.test(post.text) ? ' is-jet' : '');
+    item.innerHTML =
+      `<div class="channel-post__time">${escapeText(formatChannelTime(post.time))}</div>` +
+      `<div class="channel-post__text">${escapeText(post.text)}</div>`;
+    fragment.appendChild(item);
+  }
+  channelList.appendChild(fragment);
+  if (channelStatus) {
+    const jets = (payload.records || []).filter(r => r.jet).length;
+    channelStatus.textContent =
+      `ОНОВЛЕНО ${formatChannelTime(new Date().toISOString())} · РЕАКТИВНИХ: ${jets}`;
+  }
+}
+
+async function loadChannel() {
+  try {
+    const payload = await fetchJSON(CHANNEL_URL_PATH);
+    if (payload?.error) throw new Error(payload.error);
+    renderChannel(payload);
+  } catch (error) {
+    console.warn('Канал недоступний:', error);
+    if (channelStatus) channelStatus.textContent = 'КАНАЛ НЕДОСТУПНИЙ';
+  }
+}
+
+function setChannelHidden(hidden) {
+  channelFeed?.classList.toggle('is-hidden', hidden);
+  channelTab?.classList.toggle('is-visible', hidden);
+  try { localStorage.setItem('channel-feed-hidden', hidden ? '1' : '0'); } catch (_) {}
+}
+
+channelToggle?.addEventListener('click', () => setChannelHidden(true));
+channelTab?.addEventListener('click', () => setChannelHidden(false));
+setChannelHidden(localStorage.getItem('channel-feed-hidden') === '1');
+loadChannel();
+channelTimer = setInterval(loadChannel, CHANNEL_INTERVAL_MS);
+
+
 // Пауза у фоні: у прихованій вкладці немає сенсу тримати rAF-цикл і чотири
 // таймери. Звукових сповіщень у карти немає, тож нічого не втрачається —
 // при поверненні дані оновлюються одразу.
@@ -1810,6 +1938,8 @@ function pauseBackgroundWork() {
   clearInterval(neptunThreatsTimer);
   clearInterval(neptunWatchdogTimer);
   clearInterval(alertAgeTimer);
+  clearInterval(channelTimer);
+  channelTimer = null;
   alertAgeTimer = null;
   neptunRestTimer = null;
   neptunThreatsTimer = null;
@@ -1828,6 +1958,10 @@ function resumeBackgroundWork() {
   neptunLastSnapshotAt = Date.now();
   if (!neptunWatchdogTimer) startThreatWatchdog();
   if (neptunThreatsMode === 'rest') startThreatRestPolling();
+  if (!channelTimer) {
+    loadChannel();
+    channelTimer = setInterval(loadChannel, CHANNEL_INTERVAL_MS);
+  }
 }
 
 document.addEventListener('visibilitychange', () => {

@@ -750,3 +750,107 @@ body.has-oblast-alert .reticle { opacity: .16; }
   .live-threat-pulse { animation: none; opacity: .3; }
   .live-threat-marker { filter: none; }
 }
+
+/* --- Стрічка телеграм-каналу ----------------------------------------------
+   Тільки для читання людиною: на карту ці повідомлення не потрапляють, вони
+   лише дають контекст (зокрема слово «реактивний», якого NEPTUN не передає). */
+.channel-feed {
+  position: fixed;
+  z-index: 7;
+  right: 18px;
+  /* Нижче за лічильник цілей: він стоїть у top:58px і разом із чипами типів
+     сягає ~110px заввишки. */
+  top: 182px;
+  width: 300px;
+  max-height: calc(100vh - 250px);
+  display: flex;
+  flex-direction: column;
+  background: rgba(18, 12, 4, .82);
+  border: 1px solid rgba(255, 182, 46, .34);
+  backdrop-filter: blur(4px);
+  transition: transform .35s ease, opacity .35s ease;
+}
+.channel-feed.is-hidden { transform: translateX(calc(100% + 26px)); opacity: 0; pointer-events: none; }
+.channel-feed__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border-bottom: 1px solid rgba(255, 182, 46, .22);
+}
+.channel-feed__eyebrow { font-size: 9px; letter-spacing: .18em; opacity: .7; }
+.channel-feed__header a {
+  color: var(--radar-strong);
+  font-size: 11px;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(255, 217, 138, .4);
+}
+.channel-feed__toggle {
+  margin-left: auto;
+  background: none;
+  border: 1px solid rgba(255, 182, 46, .4);
+  color: var(--radar-strong);
+  width: 22px; height: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+.channel-feed__status {
+  padding: 5px 9px;
+  font-size: 9px;
+  letter-spacing: .1em;
+  color: rgba(255, 217, 138, .65);
+  border-bottom: 1px solid rgba(255, 182, 46, .16);
+}
+.channel-feed__list { overflow-y: auto; padding: 4px; }
+.channel-post {
+  padding: 6px 7px;
+  margin-bottom: 4px;
+  border: 1px solid rgba(255, 182, 46, .16);
+  background: rgba(0, 0, 0, .28);
+}
+.channel-post__time { font-size: 9px; letter-spacing: .1em; color: rgba(255, 217, 138, .6); }
+.channel-post__text {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #ffeccd;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* Реактивні виділяємо — це саме те, чого немає в основній стрічці даних. */
+.channel-post.is-jet { border-color: rgba(255, 140, 90, .5); }
+.channel-post.is-jet .channel-post__time::after {
+  content: ' · РЕАКТИВНІ';
+  color: #ff9a6a;
+}
+.channel-feed-tab {
+  position: fixed;
+  z-index: 7;
+  right: 0;
+  top: 150px;
+  display: none;
+  padding: 10px 5px;
+  writing-mode: vertical-rl;
+  background: rgba(18, 12, 4, .85);
+  border: 1px solid rgba(255, 182, 46, .4);
+  border-right: none;
+  color: var(--radar-strong);
+  font: 10px "Share Tech Mono", monospace;
+  letter-spacing: .2em;
+  cursor: pointer;
+}
+.channel-feed-tab.is-visible { display: block; }
+
+@media (max-width: 720px) {
+  .channel-feed {
+    right: 10px; left: 10px;
+    /* Над підписом авторства (bottom 92 + висота ~35) і таймером. */
+    top: auto; bottom: 136px;
+    width: auto;
+    max-height: 32vh;
+    backdrop-filter: none;
+  }
+  .channel-feed.is-hidden { transform: translateY(calc(100% + 150px)); }
+  .channel-feed-tab { top: auto; bottom: 136px; }
+  .channel-post__text { font-size: 10px; }
+}

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import html
 import json
 import os
+import re
 import time
 import threading
 import urllib.request
@@ -20,6 +22,27 @@ NEPTUN_ALERTS_URL = "https://neptun.in.ua/api/v1/alerts"
 NEPTUN_THREATS_URL = "https://neptun.in.ua/api/v1/threats"
 NEPTUN_OBLASTS_GEOJSON_URL = "https://neptun.in.ua/oblasts.geojson"
 NEPTUN_RAIONS_GEOJSON_URL = "https://neptun.in.ua/raions.geojson"
+
+# Публічна веб-версія телеграм-каналу. Обрано sectorv666: у вибірці з 20 дописів
+# він дав нуль новин і закликів про донати, на відміну від інших переглянутих
+# каналів, і має послідовний формат «Область: N на Місто».
+CHANNEL_NAME = "sectorv666"
+CHANNEL_URL = f"https://t.me/s/{CHANNEL_NAME}"
+CHANNEL_CACHE_TTL = 60.0
+CHANNEL_CACHE = {"timestamp": 0.0, "payload": None}
+
+# Канал пише «Чернігівщина», NEPTUN — «Чернігівська область».
+CHANNEL_OBLASTS = {
+    "київщина": "Київська", "чернігівщина": "Чернігівська", "полтавщина": "Полтавська",
+    "сумщина": "Сумська", "харківщина": "Харківська", "дніпропетровщина": "Дніпропетровська",
+    "одещина": "Одеська", "миколаївщина": "Миколаївська", "черкащина": "Черкаська",
+    "житомирщина": "Житомирська", "вінниччина": "Вінницька", "запоріжжя": "Запорізька",
+    "кіровоградщина": "Кіровоградська", "херсонщина": "Херсонська", "донеччина": "Донецька",
+    "луганщина": "Луганська", "хмельниччина": "Хмельницька", "рівненщина": "Рівненська",
+    "волинь": "Волинська", "тернопільщина": "Тернопільська", "закарпаття": "Закарпатська",
+    "буковина": "Чернівецька", "львівщина": "Львівська", "прикарпаття": "Івано-Франківська",
+    "київ": "м. Київ",
+}
 
 # Кеш відповідей NEPTUN. Без нього кожен відвідувач тягне джерело напряму: при
 # 20 одночасних це ~640 запитів за хвилину з одного IP і майже певний бан.
@@ -86,6 +109,102 @@ def cached_fetch(url: str) -> bytes:
         return body
 
 
+def parse_channel_post(text: str) -> list[dict]:
+    """Розбирає допис на записи «область → скільки, куди, чи реактивний».
+
+    Формат каналу: «Чернігівщина: 4 на Десну з півночі, 2 на Срібне (реактивні)».
+    Розбір свідомо консервативний: якщо рядок не вкладається в шаблон, ми його
+    просто пропускаємо. Хибний запис на карті гірший за відсутній.
+    """
+    records: list[dict] = []
+    text = re.sub(r"Підписатися.*", "", text, flags=re.S)
+    text = re.sub(r"Please open Telegram.*", "", text, flags=re.S)
+    current = None
+    for line in text.split("\n"):
+        line = re.sub(r"[^\S\n]+", " ", line).strip()
+        if not line:
+            continue
+        head = re.match(r"^[^\wА-Яа-яЇїІіЄєҐґ]*([А-ЯЇІЄҐ][а-яїієґ]+)\s*:?\s*(.*)$", line)
+        rest = line
+        if head and head.group(1).lower() in CHANNEL_OBLASTS:
+            current = CHANNEL_OBLASTS[head.group(1).lower()]
+            rest = head.group(2)
+        if not current:
+            continue
+        for segment in re.split(r"[,;]", rest):
+            segment = segment.strip()
+            if not segment:
+                continue
+            destination = re.search(
+                r"на\s+([А-ЯЇІЄҐ][а-яїієґ\'’\-]+(?:\s+[А-ЯЇІЄҐ][а-яїієґ\'’\-]+)?)", segment)
+            if not destination:
+                continue
+            count = re.search(r"(\d+)", segment)
+            records.append({
+                "oblast": current,
+                "count": int(count.group(1)) if count else 1,
+                "destination": destination.group(1),
+                "jet": "реактивн" in segment.lower(),
+            })
+    return records
+
+
+def fetch_channel() -> dict:
+    """Дописи каналу + витягнуті з них записи про цілі."""
+    request = urllib.request.Request(
+        CHANNEL_URL,
+        headers={
+            "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+            "Accept-Language": "uk-UA,uk;q=0.9,en;q=0.7",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        page = response.read().decode("utf-8", errors="replace")
+
+    posts, records = [], []
+    wraps = re.findall(
+        r'<div class="tgme_widget_message_wrap.*?(?=<div class="tgme_widget_message_wrap|$)',
+        page, flags=re.S)
+    for wrap in wraps:
+        stamp = re.search(r'<time[^>]+datetime="([^"]+)"', wrap)
+        body = re.search(
+            r'<div class="tgme_widget_message_text[^>]*>(.*?)</div>\s*'
+            r'(?:<div class="tgme_widget_message_footer|$)', wrap, flags=re.S)
+        if not stamp or not body:
+            continue
+        clean = re.sub(r"<br\s*/?>", "\n", body.group(1))
+        clean = html.unescape(re.sub(r"<[^>]+>", "", clean)).strip()
+        clean = re.sub(r"Підписатися.*", "", clean, flags=re.S).strip()
+        if not clean:
+            continue
+        posts.append({"time": stamp.group(1), "text": clean})
+        for record in parse_channel_post(clean):
+            record["time"] = stamp.group(1)
+            records.append(record)
+
+    posts = posts[-12:]
+    return {"channel": CHANNEL_NAME, "posts": posts, "records": records}
+
+
+def cached_channel() -> bytes:
+    now = time.time()
+    with _cache_lock:
+        if CHANNEL_CACHE["payload"] and now - CHANNEL_CACHE["timestamp"] < CHANNEL_CACHE_TTL:
+            return CHANNEL_CACHE["payload"]
+        lock = _fetch_locks.setdefault(CHANNEL_URL, threading.Lock())
+
+    with lock:
+        with _cache_lock:
+            if CHANNEL_CACHE["payload"] and time.time() - CHANNEL_CACHE["timestamp"] < CHANNEL_CACHE_TTL:
+                return CHANNEL_CACHE["payload"]
+        payload = json.dumps(fetch_channel(), ensure_ascii=False).encode("utf-8")
+        with _cache_lock:
+            CHANNEL_CACHE["timestamp"] = time.time()
+            CHANNEL_CACHE["payload"] = payload
+        return payload
+
+
 class Handler(SimpleHTTPRequestHandler):
     def translate_path(self, path: str) -> str:
         # Базовий translate_path прибирає ".."-сегменти й прив'язує шлях до
@@ -116,7 +235,25 @@ class Handler(SimpleHTTPRequestHandler):
         if route == "/api/raions-geojson":
             self.proxy_json(NEPTUN_RAIONS_GEOJSON_URL)
             return
+        if route == "/api/channel":
+            self.serve_channel()
+            return
         super().do_GET()
+
+    def serve_channel(self) -> None:
+        try:
+            body = cached_channel()
+            status = 200
+        except Exception as exc:
+            body = json.dumps({"error": str(exc), "posts": [], "records": []},
+                              ensure_ascii=False).encode("utf-8")
+            status = 502
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def proxy_json(self, url: str) -> None:
         try:
