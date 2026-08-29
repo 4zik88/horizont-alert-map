@@ -2219,7 +2219,12 @@ function renderChannel(payload) {
       count: Math.max(1, Number(record.count) || 1),
       jet: !!record.jet,
       direction: record.direction || '',
-      bearingDeg: Number.isFinite(Number(record.bearingDeg)) ? Number(record.bearingDeg) : null
+      // Саме typeof, а не Number(): Number(null) — це 0, а Number.isFinite(0)
+      // істинне, тож кожен запис без напрямку діставав би курс 0°, тобто «на
+      // північ». Мовчазна стрілка в неправильний бік гірша за відсутню.
+      bearingDeg: typeof record.bearingDeg === 'number' && Number.isFinite(record.bearingDeg)
+        ? record.bearingDeg
+        : null
     });
   }
 
