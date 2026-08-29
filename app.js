@@ -219,6 +219,75 @@ function normalizeOblastName(value) {
   return String(value || '').replace(/\s*область\s*$/iu, '').trim().toLowerCase();
 }
 
+// Канал пише назви у непрямих відмінках («на Десну», «біля Славутича»), а NEPTUN —
+// у називному («Десна», «Славутич»). Порівнювати рядки як є марно, тож обидві
+// сторони зводимо до основи. Стемер навмисно грубий і однаковий для обох боків:
+// його завдання — не розібрати морфологію, а лише не проґавити збіг. Хибний збіг
+// стримує те, що область має збігтися окремо.
+const UA_ENDINGS = /(?:ами|ями|ах|ях|ов|ев|ів|ей|ою|ею|ом|ем|ій|им|их|ий|а|я|у|ю|и|і|ї|е|о)$/u;
+
+function placeStem(value = '') {
+  return String(value)
+    .toLowerCase()
+    .replace(/[’']/gu, "'")
+    .split(/[\s\-]+/u)
+    .map(word => word.length > 4 ? word.replace(UA_ENDINGS, '') : word)
+    .filter(Boolean)
+    .join(' ');
+}
+
+// основа назви → записи каналу про цілі в цьому пункті. Ключ — саме назва, а не
+// область: Славутич адміністративно київський, але канал відносить його до
+// Чернігівщини, і на області як на жорсткому фільтрі ми цю ціль губили. Область
+// лишається пріоритетом при виборі серед однойменних, а не умовою збігу.
+const channelTargets = new Map();
+// Зростає з кожним оновленням каналу — за ним кеш на об'єкті цілі розуміє,
+// що застарів. Той самий прийом, що й з токенами полігонів: збіг рахується
+// для кожної цілі в кожному кадрі, тож рахувати його щоразу заново — марно.
+let channelVersion = 0;
+
+function channelTargetKey(oblast) {
+  return normalizeOblastName(oblast);
+}
+
+// Знаходить свіжий запис каналу, що описує цю ціль. Порівнюємо тільки назву
+// населеного пункту — район і область у каналу й NEPTUN названі по-різному.
+function channelMatchForThreat(threat) {
+  if (!threat || typeof threat !== 'object') return null;
+  const cached = threat.__channelMatch;
+  if (cached && cached.version === channelVersion) return cached.match;
+  const match = computeChannelMatch(threat);
+  Object.defineProperty(threat, '__channelMatch', {
+    value: { version: channelVersion, match },
+    enumerable: false,
+    configurable: true,
+    writable: true
+  });
+  return match;
+}
+
+function computeChannelMatch(threat) {
+  const places = [threat?.locality, threat?.district]
+    .map(placeStem)
+    .filter(Boolean);
+  if (!places.length) return null;
+
+  const oblast = channelTargetKey(threat?.region);
+  let best = null;
+  for (const place of places) {
+    for (const record of channelTargets.get(place) || []) {
+      if (!best) { best = record; continue; }
+      // Спершу та сама область, потім свіжіше. Область без збігу не відкидає
+      // запис — вона лише поступається однойменному запису зі своєї області.
+      const bestSame = best.oblast === oblast;
+      const recordSame = record.oblast === oblast;
+      if (recordSame !== bestSame) { if (recordSame) best = record; continue; }
+      if (record.at > best.at) best = record;
+    }
+  }
+  return best;
+}
+
 // Повертає 'jet' | 'prop' | null для цілі, спираючись на свіжі згадки каналу.
 function channelSpeedHint(threat) {
   if (String(threat?.type || '').toLowerCase() !== 'uav') return null;
@@ -355,6 +424,7 @@ function fallbackMotionForThreat(threat) {
 
   // Підказка каналу має перевагу над типовим діапазоном: вона конкретніша.
   const hint = channelSpeedHint(threat);
+  const channelBearing = channelMatchForThreat(threat)?.bearingDeg ?? null;
   const range = hint ? CHANNEL_SPEED[hint] : (TYPE_SPEED[type] || TYPE_SPEED.unknown);
   const hasExplicitVelocity = Number.isFinite(explicitSpeed) && explicitSpeed > 0;
   // Власна історія має перевагу над коротким треком зі стрічки: вона щільніша
@@ -387,7 +457,13 @@ function fallbackMotionForThreat(threat) {
     speedMinKmh: measured ? speedKmh : range.min,
     speedMaxKmh: measured ? speedKmh : range.max,
     speedSpreadKmh,
-    bearingDeg: Number.isFinite(explicitBearing) ? explicitBearing : null,
+    // NEPTUN лишає heading порожнім приблизно у кожної п'ятої цілі. Канал у таких
+    // випадках часто називає напрямок словами («з півночі»), і це єдине, що в нас
+    // є про курс. Власний курс стрічки завжди має перевагу — канал лише заповнює
+    // порожнечу, а не сперечається з виміром.
+    bearingDeg: Number.isFinite(explicitBearing) ? explicitBearing : channelBearing,
+    bearingSource: Number.isFinite(explicitBearing) ? 'feed'
+      : channelBearing !== null ? 'channel' : 'none',
     // Виміряній швидкості довіряємо довше, ніж припущенню за типом.
     maxMinutes: measured ? EXTRAPOLATION_MAX_MINUTES : EXTRAPOLATION_MAX_MINUTES_ESTIMATED,
     hasExplicitVelocity
@@ -407,7 +483,8 @@ function predictedThreatPosition(threat, nowMs = correctedNow()) {
     speedSource: motion.speedSource,
     speedHint: motion.speedHint,
     speedMinKmh: motion.speedMinKmh,
-    speedMaxKmh: motion.speedMaxKmh
+    speedMaxKmh: motion.speedMaxKmh,
+    bearingSource: motion.bearingSource
   };
   const reported = { lat, lon, heading: motion.bearingDeg ?? 0, extrapolatedKm: 0, ageMinutes, ...speedInfo };
 
@@ -466,7 +543,7 @@ function threatsToGeoJSON(nowMs = Date.now()) {
       const p = predictedThreatPosition(t, nowMs);
       if (!p) return null;
       const meta = threatMeta(t.type);
-      const count = Number(t.count) > 1 ? ` ×${Number(t.count)}` : '';
+      const count = threatCountSuffix(t);
       const location = t.locality || t.district || t.region || '';
       return {
         type: 'Feature',
@@ -492,6 +569,21 @@ function threatsToGeoJSON(nowMs = Date.now()) {
     })
     .filter(Boolean);
   return { type: 'FeatureCollection', features };
+}
+
+// Скільки одиниць несе трек. NEPTUN дає count лише в realtime-потоці й не завжди,
+// канал натомість пише число прямо («4 реактивних на Славутич»). Людське число
+// точніше, тож воно має перевагу.
+function threatUnitCount(threat) {
+  const match = channelMatchForThreat(threat);
+  if (match) return match.count;
+  return Math.max(1, Number(threat?.count) || 1);
+}
+
+// Підпис ×N ставимо лише там, де одиниць справді більше однієї.
+function threatCountSuffix(threat) {
+  const units = threatUnitCount(threat);
+  return units > 1 ? ` ×${units}` : '';
 }
 
 // Ціль, яку давно не оновлювали, — це вже не обстановка, а історія. NEPTUN не
@@ -528,6 +620,9 @@ const MIN_SOURCE_COUNT_VAGUE = 3;
 // з п'ятьма незалежними підтвердженнями, тож карта лишалась майже порожньою,
 // поки в небі були десятки дронів. sourceCount відображає реальність краще.
 function isTrustedThreat(threat) {
+  // Згадка в каналі — незалежне людське підтвердження, вагоміше за будь-який
+  // поріг по sourceCount. Якщо канал назвав цей населений пункт, ціль показуємо.
+  if (channelMatchForThreat(threat)) return true;
   // areaOnly — це не ціль. NEPTUN прямо пише «попередження по області, точка
   // невідома», а ми ставили маркер у геометричний центр області: місце, де за
   // власним визнанням джерела нічого немає. Сама тривога вже показана заливкою
@@ -666,7 +761,7 @@ function createThreatMarkerElement(threat) {
   icon.className = 'live-threat-icon';
   icon.innerHTML = threatIconSvg(meta.iconKey);
 
-  const count = Number(threat.count) > 1 ? ` ×${Number(threat.count)}` : '';
+  const count = threatCountSuffix(threat);
   const label = document.createElement('span');
   label.className = 'live-threat-label';
   label.textContent = `${meta.short}${count}`;
@@ -685,7 +780,7 @@ function updateThreatMarkerContent(record, threat) {
     record.iconKey = meta.iconKey;
   }
   if (record.label) {
-    const count = Number(threat.count) > 1 ? ` ×${Number(threat.count)}` : '';
+    const count = threatCountSuffix(threat);
     record.label.textContent = `${meta.short}${count}`;
   }
   record.threat = threat;
@@ -730,11 +825,13 @@ function showThreatPopup(threat, marker) {
     : quality === 'confirmed' ? 'підтверджена'
     : quality === 'approx' ? 'приблизна'
     : '—';
+  const match = channelMatchForThreat(threat);
   const hasCourse = Number.isFinite(
     Number(threat?.velocity?.bearingDeg ?? threat?.heading ?? threat?.bearing)
-  );
+  ) || position.bearingSource === 'channel';
   const heading = Math.round(Number(position.heading) || 0);
   const courseLabel = !hasCourse ? '—'
+    : position.bearingSource === 'channel' ? `${heading}° (${safe(match?.direction || 'за каналом')})`
     : threat.presumptiveCourse === true ? `${heading}° (припущений)`
     : `${heading}°`;
   const uncertaintyKm = threatUncertaintyKm(threat);
@@ -748,6 +845,11 @@ function showThreatPopup(threat, marker) {
     speedRow(position, hasCourse),
     position.extrapolatedKm > 0.05 ? `Дораховано: ${position.extrapolatedKm.toFixed(1)} км` : null,
     `Джерел: ${Number(threat.sourceCount) || 0}`,
+    // Звірка з каналом — окремий рядок: видно, чи цю ціль назвала людина, чи вона
+    // тримається лише на автоматичних повідомленнях.
+    match
+      ? `Канал: ${safe(match.count)} на ${safe(match.destination)}${match.direction ? ' ' + safe(match.direction) : ''}`
+      : 'Канал: не згадує',
     `Оновлено: ${safe(updated)}`
   ].filter(Boolean).join('<br>');
 
@@ -923,35 +1025,38 @@ function isConfirmedThreat(threat) {
 }
 
 function threatBreakdown(nowMs = Date.now()) {
-  // Лічильник рахує рівно те, що показано на карті: лише підтверджені.
+  // Головне число — це мітки на карті, одна до одної. Раніше воно рахувало
+  // одиниці (групу з 4 дронів як 4), і на екрані виходило 34 при двох десятках
+  // маркерів: число й карта розповідали різне. Одиниці лишились, але окремим
+  // рядком, а не заголовком.
   const visible = visibleThreats(nowMs);
   const clusters = dedupeThreatClusters(visible, nowMs);
   const merged = visible.length - clusters.length;
 
   const byType = new Map();
-  let confirmed = 0;
+  let units = 0;
+  let corroborated = 0;
 
   for (const cluster of clusters) {
-    // count — це розмір групи (пор. заголовок «Група БпЛА (2+)»), тому рахуємо
-    // одиниці, а не треки. У межах кластера беремо максимум, а не суму: це
-    // повідомлення про ту саму ціль, і найдетальніше з них уже містить розмір групи.
-    const units = Math.max(...cluster.map(t => Math.max(1, Number(t.count) || 1)));
     const lead = cluster.find(isConfirmedThreat) || cluster[0];
     const type = THREAT_META[lead.type] ? lead.type : 'unknown';
-    byType.set(type, (byType.get(type) || 0) + units);
-    confirmed += units;
+    byType.set(type, (byType.get(type) || 0) + 1);
+    // У межах кластера беремо максимум, а не суму: це повідомлення про ту саму
+    // ціль, і найдетальніше з них уже містить розмір групи.
+    units += Math.max(...cluster.map(threatUnitCount));
+    if (cluster.some(channelMatchForThreat)) corroborated += 1;
   }
 
   const order = Object.keys(THREAT_META);
   const items = [...byType.entries()]
     .sort((a, b) => (b[1] - a[1]) || (order.indexOf(a[0]) - order.indexOf(b[0])));
-  return { total: confirmed, items, merged };
+  return { total: clusters.length, items, merged, units, corroborated };
 }
 
 function renderThreatCounter(suffix = '') {
   const counter = document.getElementById('threatCount');
   if (!counter) return;
-  const { total, items, merged } = threatBreakdown();
+  const { total, items, merged, units, corroborated } = threatBreakdown();
 
   counter.textContent = '';
   const head = document.createElement('div');
@@ -959,13 +1064,20 @@ function renderThreatCounter(suffix = '') {
   head.textContent = `ЦІЛІ: ${total}${suffix}`;
   counter.appendChild(head);
 
+  const note = (text) => {
+    const row = document.createElement('div');
+    row.className = 'threat-count__merged';
+    row.textContent = text;
+    counter.appendChild(row);
+  };
+
+  // Група з чотирьох дронів — це один маркер, але чотири апарати. Показуємо
+  // одиниці окремо, щоб заголовок лишався рівним кількості міток на карті.
+  if (units > total) note(`ОДИНИЦЬ: ${units}`);
+  // Скільки цілей назвав канал — незалежна від NEPTUN людська перевірка.
+  if (total > 0) note(`ЗА КАНАЛОМ: ${corroborated} З ${total}`);
   // Скільки треків злито як дублі — щоб число не змінювалося «мовчки».
-  if (merged > 0) {
-    const dup = document.createElement('div');
-    dup.className = 'threat-count__merged';
-    dup.textContent = `ЗЛИТО ДУБЛІВ: ${merged}`;
-    counter.appendChild(dup);
-  }
+  if (merged > 0) note(`ЗЛИТО ДУБЛІВ: ${merged}`);
 
   if (!items.length) return;
   const list = document.createElement('div');
@@ -2083,12 +2195,32 @@ function renderChannel(payload) {
 
   // Підказки про реактивні — по областях, зі свіжістю за часом допису.
   channelOblastHints.clear();
+  channelTargets.clear();
+  channelVersion += 1;
+  const cutoff = Date.now() - CHANNEL_HINT_TTL_MS;
   for (const record of payload?.records || []) {
     const key = normalizeOblastName(record.oblast);
-    if (!key) continue;
     const at = Date.parse(record.time || '') || Date.now();
-    const prev = channelOblastHints.get(key);
-    if (!prev || at >= prev.at) channelOblastHints.set(key, { jet: !!record.jet, at });
+    if (key) {
+      const prev = channelOblastHints.get(key);
+      if (!prev || at >= prev.at) channelOblastHints.set(key, { jet: !!record.jet, at });
+    }
+
+    // Застарілий допис уже не описує обстановку, тож у звірку не йде.
+    if (at < cutoff) continue;
+    const stem = placeStem(record.destination);
+    if (!stem) continue;
+    if (!channelTargets.has(stem)) channelTargets.set(stem, []);
+    channelTargets.get(stem).push({
+      stem,
+      at,
+      oblast: key,
+      destination: record.destination || '',
+      count: Math.max(1, Number(record.count) || 1),
+      jet: !!record.jet,
+      direction: record.direction || '',
+      bearingDeg: Number.isFinite(Number(record.bearingDeg)) ? Number(record.bearingDeg) : null
+    });
   }
 
   if (!channelList) return;

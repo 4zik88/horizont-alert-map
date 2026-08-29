@@ -115,6 +115,37 @@ def cached_fetch(url: str) -> bytes:
         return body
 
 
+# Звідки летить ціль. Канал пише напрямок словами («з півночі», «з рф»,
+# «з Брянської області»), і це часто єдине джерело курсу: NEPTUN лишає heading
+# порожнім приблизно у кожної п'ятої цілі. Градус — це курс РУХУ, тобто напрямок,
+# протилежний тому, звідки ціль зайшла.
+CHANNEL_BEARINGS = {
+    "півночі": 180, "півдня": 0, "сходу": 270, "заходу": 90,
+    "північного сходу": 225, "північного заходу": 135,
+    "південного сходу": 315, "південного заходу": 45,
+}
+
+# Напрямки, названі місцем, а не стороною світу. Курс із них не виводимо —
+# для цього треба знати, де саме ціль, — але текст показуємо як є.
+CHANNEL_ORIGIN_RE = re.compile(
+    r"\b(?:з|зі|із)\s+(рф|[А-ЯЇІЄҐ][а-яїієґ\'’\-]+(?:\s+(?:област[іь]|краю))?)")
+
+CHANNEL_CARDINAL_RE = re.compile(
+    r"\b(?:з|зі|із)\s+((?:північного|південного)\s+(?:сходу|заходу)|півночі|півдня|сходу|заходу)")
+
+
+def parse_channel_direction(segment: str) -> tuple[str, "int | None"]:
+    """Повертає (текст напрямку, курс руху в градусах або None)."""
+    cardinal = CHANNEL_CARDINAL_RE.search(segment)
+    if cardinal:
+        word = re.sub(r"\s+", " ", cardinal.group(1).strip().lower())
+        return f"з {word}", CHANNEL_BEARINGS.get(word)
+    origin = CHANNEL_ORIGIN_RE.search(segment)
+    if origin:
+        return f"з {origin.group(1)}", None
+    return "", None
+
+
 def parse_channel_post(text: str) -> list[dict]:
     """Розбирає допис на записи «область → скільки, куди, чи реактивний».
 
@@ -135,22 +166,37 @@ def parse_channel_post(text: str) -> list[dict]:
         if head and head.group(1).lower() in CHANNEL_OBLASTS:
             current = CHANNEL_OBLASTS[head.group(1).lower()]
             rest = head.group(2)
-        if not current:
-            continue
+        # Дописи на кшталт «На Ірпінь, Бучу» або «Бандероль на Зміїв, Харківщина!»
+        # не мають заголовка з областю, але називають ціль цілком конкретно.
+        # Раніше ми їх мовчки викидали. Тепер записуємо без області — клієнт
+        # звіряє за назвою пункту, а область для нього лише пріоритет.
+        # Шаблон призначення й так вимагає «на/біля/курс» + назву з великої,
+        # тож звичайний текст під нього не потрапляє.
+        oblast = current or ""
+        # «(реактивні)» стоїть у кінці рядка, але стосується всіх його цілей.
+        # Раніше ознаку діставав лише останній сегмент, тож решта цілей того ж
+        # рядка вважалися пропелерними — і отримували вчетверо меншу швидкість.
+        line_jet = "реактивн" in rest.lower()
         for segment in re.split(r"[,;]", rest):
             segment = segment.strip()
             if not segment:
                 continue
+            # «на Десну», «біля Нових Санжар», «курс Славутич» — канал вживає всі три,
+            # і раніше ми бачили лише перший, тобто мовчки губили частину цілей.
             destination = re.search(
-                r"на\s+([А-ЯЇІЄҐ][а-яїієґ\'’\-]+(?:\s+[А-ЯЇІЄҐ][а-яїієґ\'’\-]+)?)", segment)
+                r"(?:на|біля|курс)\s+([А-ЯЇІЄҐ][а-яїієґ\'’\-]+(?:\s+[А-ЯЇІЄҐ][а-яїієґ\'’\-]+)?)",
+                segment)
             if not destination:
                 continue
             count = re.search(r"(\d+)", segment)
+            direction, bearing = parse_channel_direction(segment)
             records.append({
-                "oblast": current,
+                "oblast": oblast,
                 "count": int(count.group(1)) if count else 1,
                 "destination": destination.group(1),
-                "jet": "реактивн" in segment.lower(),
+                "jet": line_jet or "реактивн" in segment.lower(),
+                "direction": direction,
+                "bearingDeg": bearing,
             })
     return records
 
