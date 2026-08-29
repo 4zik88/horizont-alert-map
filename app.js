@@ -345,7 +345,11 @@ const TRAIL_SPEED_MIN_KMH = 15;
 // саму ціль ми бачимо кожні 5 секунд — тож за хвилину маємо власний трек для
 // КОЖНОЇ, а не для десятої частини. Це замінює вигадану швидкість виміряною.
 const OWN_TRAIL_MAX_POINTS = 24;
-const OWN_TRAIL_MAX_AGE_MS = 12 * 60 * 1000;
+// NEPTUN оновлює updatedAt часто, але саму координату зсуває приблизно раз на
+// 21–23 хвилини (виміряно на цілях, що справді летіли). При вікні 12 хвилин
+// попередня фіксація відсікалася раніше, ніж приходила наступна, тож у треку
+// ніколи не було двох точок — а без двох точок немає ні швидкості, ні курсу.
+const OWN_TRAIL_MAX_AGE_MS = 45 * 60 * 1000;
 // Менше — це шум GPS-повідомлень, а не рух.
 const OWN_TRAIL_MIN_STEP_KM = 0.3;
 const ownTrails = new Map();
@@ -376,6 +380,46 @@ function recordThreatPositions() {
   }
   // Ціль зникла зі стрічки — прибираємо її історію, щоб мапа не росла.
   for (const id of ownTrails.keys()) if (!seen.has(id)) ownTrails.delete(id);
+}
+
+// Курс між двома точками: градуси від півночі за годинниковою стрілкою.
+function bearingDegBetween(lat1, lon1, lat2, lon2) {
+  const rad = Math.PI / 180;
+  const f1 = lat1 * rad, f2 = lat2 * rad, dl = (lon2 - lon1) * rad;
+  const y = Math.sin(dl) * Math.cos(f2);
+  const x = Math.cos(f1) * Math.sin(f2) - Math.sin(f1) * Math.cos(f2) * Math.cos(dl);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+// Коротке плече дає випадковий курс: на 300 метрах шум повідомлень більший за рух.
+const OWN_TRAIL_MIN_BEARING_KM = 2;
+// Відношення прямої відстані до пройденого шляху. Ціль, що петляє між
+// повідомленнями, курсу не має — і вигадувати їй курс гірше, ніж лишити без нього.
+const OWN_TRAIL_MIN_STRAIGHTNESS = 0.7;
+
+// Курс із власної історії. На відміну від швидкості, беремо не всю базу, а
+// ОСТАННЄ плече: якщо ціль повернула, поточний курс — це той, яким вона летить
+// зараз, а не усереднений за півгодини. Довга база лишається запобіжником:
+// якщо весь трек хаотичний, курсу не даємо взагалі.
+function ownTrailBearingDeg(threat) {
+  const points = ownTrails.get(String(threat?.id || ''));
+  if (!points || points.length < 2) return null;
+
+  const prev = points[points.length - 2], last = points[points.length - 1];
+  if (distanceKmBetween(prev.lat, prev.lon, last.lat, last.lon) < OWN_TRAIL_MIN_BEARING_KM) return null;
+
+  // Перевірку на прямизну має сенс робити лише від трьох точок: на двох вона
+  // завжди дорівнює одиниці й нічого не каже.
+  if (points.length >= 3) {
+    let pathKm = 0;
+    for (let i = 1; i < points.length; i++) {
+      pathKm += distanceKmBetween(points[i - 1].lat, points[i - 1].lon, points[i].lat, points[i].lon);
+    }
+    const netKm = distanceKmBetween(points[0].lat, points[0].lon, last.lat, last.lon);
+    if (pathKm > 0 && netKm / pathKm < OWN_TRAIL_MIN_STRAIGHTNESS) return null;
+  }
+
+  return bearingDegBetween(prev.lat, prev.lon, last.lat, last.lon);
 }
 
 // Швидкість із власної історії. Беремо довгу базу (перша й остання точки):
@@ -425,6 +469,21 @@ function fallbackMotionForThreat(threat) {
   // Підказка каналу має перевагу над типовим діапазоном: вона конкретніша.
   const hint = channelSpeedHint(threat);
   const channelBearing = channelMatchForThreat(threat)?.bearingDeg ?? null;
+
+  // Порядок курсу: справжній вектор зі стрічки → власний вимір → припущений курс
+  // стрічки → сторона світу з каналу. Наш вимір б'є припущення NEPTUN, бо це
+  // спостереження, а не оцінка, — але не б'є його ж виміряний вектор швидкості.
+  // NEPTUN лишає курс порожнім приблизно у кожної п'ятої цілі; раніше такі цілі
+  // просто стояли на місці, хоча ми бачили, як вони зсуваються між опитуваннями.
+  const feedBearing = Number.isFinite(explicitBearing) ? explicitBearing : null;
+  const feedPresumed = threat?.presumptiveCourse === true;
+  const ownBearing = ownTrailBearingDeg(threat);
+  const course =
+      feedBearing !== null && !feedPresumed ? { deg: feedBearing, source: 'feed' }
+    : ownBearing !== null                   ? { deg: ownBearing, source: 'own' }
+    : feedBearing !== null                  ? { deg: feedBearing, source: 'feed' }
+    : channelBearing !== null               ? { deg: channelBearing, source: 'channel' }
+    : { deg: null, source: 'none' };
   const range = hint ? CHANNEL_SPEED[hint] : (TYPE_SPEED[type] || TYPE_SPEED.unknown);
   const hasExplicitVelocity = Number.isFinite(explicitSpeed) && explicitSpeed > 0;
   // Власна історія має перевагу над коротким треком зі стрічки: вона щільніша
@@ -457,13 +516,8 @@ function fallbackMotionForThreat(threat) {
     speedMinKmh: measured ? speedKmh : range.min,
     speedMaxKmh: measured ? speedKmh : range.max,
     speedSpreadKmh,
-    // NEPTUN лишає heading порожнім приблизно у кожної п'ятої цілі. Канал у таких
-    // випадках часто називає напрямок словами («з півночі»), і це єдине, що в нас
-    // є про курс. Власний курс стрічки завжди має перевагу — канал лише заповнює
-    // порожнечу, а не сперечається з виміром.
-    bearingDeg: Number.isFinite(explicitBearing) ? explicitBearing : channelBearing,
-    bearingSource: Number.isFinite(explicitBearing) ? 'feed'
-      : channelBearing !== null ? 'channel' : 'none',
+    bearingDeg: course.deg,
+    bearingSource: course.source,
     // Виміряній швидкості довіряємо довше, ніж припущенню за типом.
     maxMinutes: measured ? EXTRAPOLATION_MAX_MINUTES : EXTRAPOLATION_MAX_MINUTES_ESTIMATED,
     hasExplicitVelocity
@@ -788,11 +842,11 @@ function showThreatPopup(threat, marker) {
     : quality === 'approx' ? 'приблизна'
     : '—';
   const match = channelMatchForThreat(threat);
-  const hasCourse = Number.isFinite(
-    Number(threat?.velocity?.bearingDeg ?? threat?.heading ?? threat?.bearing)
-  ) || position.bearingSource === 'channel';
+  // Джерело курсу вирішує все: воно ж визначає, чи курс узагалі є.
+  const hasCourse = position.bearingSource && position.bearingSource !== 'none';
   const heading = Math.round(Number(position.heading) || 0);
   const courseLabel = !hasCourse ? '—'
+    : position.bearingSource === 'own' ? `${heading}° (виміряний)`
     : position.bearingSource === 'channel' ? `${heading}° (${safe(match?.direction || 'за каналом')})`
     : threat.presumptiveCourse === true ? `${heading}° (припущений)`
     : `${heading}°`;
