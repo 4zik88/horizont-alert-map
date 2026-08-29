@@ -844,3 +844,22 @@ body.has-oblast-alert .reticle { opacity: .16; }
   .channel-feed-tab { top: auto; bottom: 136px; }
   .channel-post__text { font-size: 10px; }
 }
+
+/* Звірка тривог із другим, незалежним джерелом (ubilling). Розбіжність не
+   означає помилку: джерела рахують по-різному й оновлюються з різним темпом.
+   Але систематична розбіжність — привід придивитись. */
+.cross-check {
+  padding: 5px 9px;
+  font-size: 10px;
+  letter-spacing: .08em;
+  white-space: nowrap;
+  color: rgba(255, 217, 138, .62);
+  background: rgba(18, 12, 4, .74);
+  border: 1px solid rgba(255, 182, 46, .22);
+  backdrop-filter: blur(4px);
+}
+.cross-check:empty { display: none; }
+.cross-check.is-diff { color: #ffd166; border-color: rgba(255, 209, 102, .45); }
+@media (max-width: 720px) {
+  .cross-check { font-size: 9px; padding: 4px 7px; white-space: normal; }
+}

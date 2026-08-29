@@ -26,6 +26,11 @@ NEPTUN_RAIONS_GEOJSON_URL = "https://neptun.in.ua/raions.geojson"
 # Публічна веб-версія телеграм-каналу. Обрано sectorv666: у вибірці з 20 дописів
 # він дав нуль новин і закликів про донати, на відміну від інших переглянутих
 # каналів, і має послідовний формат «Область: N на Місто».
+# Друге, незалежне від NEPTUN джерело стану тривог. Працює без ключа, але дає
+# лише рівень областей — районів у ньому немає. Використовуємо для звірки, а не
+# як заміну: розбіжність між двома джерелами і є тим, що варто бачити.
+UBILLING_URL = "https://ubilling.net.ua/aerialalerts/"
+
 CHANNEL_NAME = "sectorv666"
 CHANNEL_URL = f"https://t.me/s/{CHANNEL_NAME}"
 CHANNEL_CACHE_TTL = 60.0
@@ -48,6 +53,7 @@ CHANNEL_OBLASTS = {
 # 20 одночасних це ~640 запитів за хвилину з одного IP і майже певний бан.
 # З кешем частота звернень до NEPTUN стала і не залежить від кількості людей.
 CACHE_TTL_SECONDS = {
+    UBILLING_URL: 5.0,
     NEPTUN_ALERTS_URL: 3.0,
     NEPTUN_THREATS_URL: 4.0,
     # Межі областей і районів змінюються хіба що раз на роки.
@@ -237,6 +243,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if route == "/api/channel":
             self.serve_channel()
+            return
+        if route == "/api/alerts-alt":
+            self.proxy_json(UBILLING_URL)
             return
         super().do_GET()
 
