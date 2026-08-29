@@ -820,24 +820,19 @@ function isConfirmedThreat(threat) {
 }
 
 function threatBreakdown(nowMs = Date.now()) {
-  const visible = activeThreats(nowMs);
+  // Лічильник рахує рівно те, що показано на карті: лише підтверджені.
+  const visible = visibleThreats(nowMs);
   const clusters = dedupeThreatClusters(visible, nowMs);
   const merged = visible.length - clusters.length;
 
   const byType = new Map();
   let confirmed = 0;
-  let uncertain = 0;
 
   for (const cluster of clusters) {
     // count — це розмір групи (пор. заголовок «Група БпЛА (2+)»), тому рахуємо
     // одиниці, а не треки. У межах кластера беремо максимум, а не суму: це
     // повідомлення про ту саму ціль, і найдетальніше з них уже містить розмір групи.
     const units = Math.max(...cluster.map(t => Math.max(1, Number(t.count) || 1)));
-    // Кластер вважаємо підтвердженим, якщо підтверджене хоча б одне повідомлення.
-    if (!cluster.some(isConfirmedThreat)) {
-      uncertain += units;
-      continue;
-    }
     const lead = cluster.find(isConfirmedThreat) || cluster[0];
     const type = THREAT_META[lead.type] ? lead.type : 'unknown';
     byType.set(type, (byType.get(type) || 0) + units);
@@ -847,30 +842,19 @@ function threatBreakdown(nowMs = Date.now()) {
   const order = Object.keys(THREAT_META);
   const items = [...byType.entries()]
     .sort((a, b) => (b[1] - a[1]) || (order.indexOf(a[0]) - order.indexOf(b[0])));
-  return { total: confirmed, uncertain, items, merged };
+  return { total: confirmed, items, merged };
 }
 
 function renderThreatCounter(suffix = '') {
   const counter = document.getElementById('threatCount');
   if (!counter) return;
-  const { total, uncertain, items, merged } = threatBreakdown();
+  const { total, items, merged } = threatBreakdown();
 
   counter.textContent = '';
   const head = document.createElement('div');
   head.className = 'threat-count__total';
   head.textContent = `ЦІЛІ: ${total}${suffix}`;
   counter.appendChild(head);
-
-  // Неперевірені показуємо окремо: вони лишаються на карті, але не роздувають
-  // головне число, яке має бути порівнянним із тим, що публікують канали.
-  if (uncertain > 0) {
-    const extra = document.createElement('div');
-    extra.className = 'threat-count__uncertain';
-    // Форма «НЕТОЧНІ: N», а не «+N неточних»: не залежить від відмінювання
-    // числівника (2–4 неточні / 5 неточних) і збігається зі стилем «ЦІЛІ: N».
-    extra.textContent = `НЕТОЧНІ: ${uncertain}`;
-    counter.appendChild(extra);
-  }
 
   // Скільки треків злито як дублі — щоб число не змінювалося «мовчки».
   if (merged > 0) {

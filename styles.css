@@ -497,15 +497,6 @@ body.alt {
   z-index: 200;
 }
 
-/* Неперевірені цілі: лишаються на карті, але подані тихіше за підтверджені. */
-.threat-count__uncertain {
-  margin-top: 3px;
-  font-size: 11px;
-  letter-spacing: .06em;
-  color: rgba(255, 145, 145, .72);
-  white-space: nowrap;
-}
-
 /* Кількість злитих дублів — службова інформація, найтихіший рядок у панелі. */
 .threat-count__merged {
   margin-top: 2px;
@@ -731,7 +722,6 @@ body.has-oblast-alert .reticle { opacity: .16; }
 @media (prefers-reduced-motion: reduce) {
   .radar-btn.is-armed { animation: none; border-color: rgba(168, 228, 255, .9); }
 }
-
 
 /* --- Полегшення для мобільних -------------------------------------------
    Повноекранні шари з mix-blend-mode і backdrop-filter змушують браузер
