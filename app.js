@@ -533,44 +533,6 @@ function predictedThreatPosition(threat, nowMs = correctedNow()) {
   };
 }
 
-function threatsToGeoJSON(nowMs = Date.now()) {
-  // Той самий список, що й у маркерів, трас і кіл невизначеності. Раніше цей шар
-  // єдиний брав currentThreats напряму, тож малював стрілку кожному повідомленню —
-  // і поодинокому неперевіреному, і застарілому. Саме звідси на карті бралися
-  // безіменні стрілки в місцях, яких немає в жодному каналі.
-  const features = visibleThreats(nowMs)
-    .map(t => {
-      const p = predictedThreatPosition(t, nowMs);
-      if (!p) return null;
-      const meta = threatMeta(t.type);
-      const count = threatCountSuffix(t);
-      const location = t.locality || t.district || t.region || '';
-      return {
-        type: 'Feature',
-        id: String(t.id || `${t.type}-${t.lat}-${t.lon}`),
-        properties: {
-          id: String(t.id || ''),
-          type: t.type || 'unknown',
-          title: t.title || meta.label,
-          label: `${meta.short}${count}`,
-          iconKey: meta.iconKey,
-          color: meta.color,
-          heading: Number.isFinite(Number(p.heading)) ? Number(p.heading) : 0,
-          region: t.region || '',
-          district: t.district || '',
-          locality: location,
-          confidence: t.confidenceLevel || '',
-          sourceCount: Number(t.sourceCount) || 0,
-          updatedAt: t.updatedAt || '',
-          explanation: t.explanationShort || ''
-        },
-        geometry: { type: 'Point', coordinates: [p.lon, p.lat] }
-      };
-    })
-    .filter(Boolean);
-  return { type: 'FeatureCollection', features };
-}
-
 // Скільки одиниць несе трек. NEPTUN дає count лише в realtime-потоці й не завжди,
 // канал натомість пише число прямо («4 реактивних на Славутич»). Людське число
 // точніше, тож воно має перевагу.
@@ -1473,83 +1435,6 @@ function addNeptunAlertLayers() {
   });
 }
 
-// --- Звірка тривог із другим джерелом --------------------------------------
-// ubilling каже лише «в області є тривога будь-де», без поділу на райони.
-// Тому з боку NEPTUN беремо об'єднання: обласна тривога АБО будь-який
-// активний район у цій області. Інакше порівнювали б різні речі.
-const ALT_ALERTS_URL = '/api/alerts-alt';
-const ALT_ALERTS_INTERVAL_MS = 15000;
-let altAlertsTimer = null;
-let lastCrossCheck = null;
-
-function neptunOblastSet(payload) {
-  const set = new Set();
-  for (const o of payload?.oblasts || []) {
-    const name = normalizeOblastName(o?.name || o?.oblast || o?.key);
-    if (name) set.add(name);
-  }
-  // Район у тривозі означає, що в області тривога є — саме так це рахує ubilling.
-  for (const r of payload?.raions || []) {
-    const name = normalizeOblastName(r?.oblast);
-    if (name) set.add(name);
-  }
-  return set;
-}
-
-function altOblastSet(payload) {
-  const set = new Set();
-  for (const [name, state] of Object.entries(payload?.states || {})) {
-    if (state?.alertnow) {
-      const key = normalizeOblastName(name);
-      if (key) set.add(key);
-    }
-  }
-  return set;
-}
-
-function renderCrossCheck() {
-  const el = document.getElementById('crossCheck');
-  if (!el) return;
-  if (!lastCrossCheck) { el.textContent = ''; return; }
-  const { onlyNeptun, onlyAlt, agree } = lastCrossCheck;
-  const diff = onlyNeptun.length + onlyAlt.length;
-  el.classList.toggle('is-diff', diff > 0);
-  el.textContent = diff === 0
-    ? `ЗВІРКА: ДЖЕРЕЛА ЗБІГАЮТЬСЯ (${agree})`
-    : `ЗВІРКА: РОЗБІЖНОСТЕЙ ${diff} З ${agree + diff}`;
-  el.title = diff === 0 ? 'NEPTUN і ubilling показують однаковий стан по областях'
-    : [
-        onlyNeptun.length ? `лише NEPTUN: ${onlyNeptun.join(', ')}` : '',
-        onlyAlt.length ? `лише ubilling: ${onlyAlt.join(', ')}` : ''
-      ].filter(Boolean).join(' • ');
-}
-
-async function fetchAltAlerts() {
-  try {
-    const payload = await fetchJSON(ALT_ALERTS_URL);
-    if (payload?.error) throw new Error(payload.error);
-    if (!lastAlertPayload) return;
-    const a = neptunOblastSet(lastAlertPayload);
-    const b = altOblastSet(payload);
-    const onlyNeptun = [...a].filter(x => !b.has(x));
-    const onlyAlt = [...b].filter(x => !a.has(x));
-    lastCrossCheck = {
-      onlyNeptun, onlyAlt,
-      agree: [...a].filter(x => b.has(x)).length,
-      at: Date.now()
-    };
-    renderCrossCheck();
-    if (onlyNeptun.length || onlyAlt.length) {
-      console.warn('Звірка тривог: розбіжність |',
-        'лише NEPTUN:', onlyNeptun, '| лише ubilling:', onlyAlt);
-    }
-  } catch (error) {
-    console.warn('Друге джерело тривог недоступне:', error);
-    const el = document.getElementById('crossCheck');
-    if (el) { el.textContent = 'ЗВІРКА: ДЖЕРЕЛО НЕДОСТУПНЕ'; el.classList.remove('is-diff'); }
-  }
-}
-
 async function fetchNeptunAlerts() {
   try {
     const payload = await fetchJSON('/api/alerts');
@@ -1565,9 +1450,6 @@ function startNeptunAlerts() {
   clearInterval(neptunRestTimer);
   neptunRestTimer = setInterval(fetchNeptunAlerts, ALERTS_INTERVAL_MS);
   startAlertAgeTicker();
-  fetchAltAlerts();
-  clearInterval(altAlertsTimer);
-  altAlertsTimer = setInterval(fetchAltAlerts, ALT_ALERTS_INTERVAL_MS);
 }
 
 const REGION_BASES = [
@@ -2245,9 +2127,7 @@ function renderChannel(payload) {
   }
   channelList.appendChild(fragment);
   if (channelStatus) {
-    const jets = (payload.records || []).filter(r => r.jet).length;
-    channelStatus.textContent =
-      `ОНОВЛЕНО ${formatChannelTime(new Date().toISOString())} · РЕАКТИВНИХ: ${jets}`;
+    channelStatus.textContent = `ОНОВЛЕНО ${formatChannelTime(new Date().toISOString())}`;
   }
 }
 
@@ -2287,8 +2167,6 @@ function pauseBackgroundWork() {
   clearInterval(neptunThreatsTimer);
   clearInterval(neptunWatchdogTimer);
   clearInterval(alertAgeTimer);
-  clearInterval(altAlertsTimer);
-  altAlertsTimer = null;
   clearInterval(channelTimer);
   channelTimer = null;
   alertAgeTimer = null;
