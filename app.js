@@ -94,6 +94,12 @@ const OBLAST_NAME_TO_KEY = {
 let regionsGeoJSON = null;
 let neptunOblastsGeoJSON = null;
 let neptunRaionsGeoJSON = null;
+// Полігони, які зараз у тривозі: райони плюс області. Наповнюються з того самого
+// набору, який іде на підсвітку, тож карта й фільтр не можуть розійтися.
+let alertedPolygons = [];
+// Версія зростає з кожним оновленням тривог — за нею кеш на об'єкті цілі
+// розуміє, що застарів.
+let alertZoneVersion = 0;
 let neptunRestTimer = null;
 
 let neptunThreatsTimer = null;
@@ -313,8 +319,23 @@ function threatUncertaintyKm(threat) {
   return Number.isFinite(km) && km > 0 ? km : null;
 }
 
+// Прапорцю areaOnly довіряти не можна: у WebSocket-потоці його немає взагалі
+// (0 із 33 записів), а в REST він буває відсутній там, де мав би стояти. Живий
+// приклад: region 'Миколаївська область', locality порожній, радіус 45 км,
+// lifecycle 'confirmed', areaOnly не виставлено — і такий запис малювався
+// точкою в центрі області, де за визнанням самого джерела нічого немає.
+// Тому ознаку визначаємо структурно, а прапорець лишається одним із варіантів.
+const AREA_ONLY_UNCERTAINTY_KM = 45;
+
 function isAreaOnlyThreat(threat) {
-  return threat?.areaOnly === true;
+  if (threat?.areaOnly === true) return true;
+  // Радіус у півсотні кілометрів — це вже не точка, а область.
+  if ((Number(threat?.uncertaintyKm) || 0) >= AREA_ONLY_UNCERTAINTY_KM) return true;
+  const locality = String(threat?.locality || '').trim();
+  // Немає населеного пункту — немає й точки.
+  if (!locality) return !String(threat?.district || '').trim();
+  // «Харківська область» у полі населеного пункту означає рівно те саме.
+  return normalizeOblastName(locality) === normalizeOblastName(threat?.region);
 }
 
 // Рухаємо ціль, якщо в неї взагалі є курс. Приблизна позиція (positionQuality
@@ -596,10 +617,16 @@ function threatUnitCount(threat) {
   return Math.max(1, Number(threat?.count) || 1);
 }
 
-// Підпис ×N ставимо лише там, де одиниць справді більше однієї.
-function threatCountSuffix(threat) {
-  const units = threatUnitCount(threat);
+// Підпис ×N ставимо лише там, де одиниць справді більше однієї. Кількість можна
+// передати ззовні: маркер показує кластер, а не окремий трек.
+function threatCountSuffix(threat, units = threatUnitCount(threat)) {
   return units > 1 ? ` ×${units}` : '';
+}
+
+// Скільки одиниць несе кластер. Максимум, а не сума: це повідомлення про ту саму
+// ціль, і найдетальніше з них уже містить розмір групи.
+function clusterUnitCount(cluster) {
+  return Math.max(...cluster.map(threatUnitCount));
 }
 
 // Ціль, яку давно не оновлювали, — це вже не обстановка, а історія. NEPTUN не
@@ -635,30 +662,126 @@ const MIN_SOURCE_COUNT_VAGUE = 3;
 // Фільтр по lifecycle був помилкою: NEPTUN позначає 'uncertain' навіть цілі
 // з п'ятьма незалежними підтвердженнями, тож карта лишалась майже порожньою,
 // поки в небі були десятки дронів. sourceCount відображає реальність краще.
-function isTrustedThreat(threat) {
+// --- Чи лежить ціль у зоні тривоги ------------------------------------------
+// Промінь праворуч: скільки ребер перетнув — непарне означає «всередині».
+function pointInRing(lon, lat, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if ((yi > lat) !== (yj > lat) &&
+        lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+// Полігон рахується разом із дірками: точка в дірці — це поза полігоном.
+function polygonContains(rings, lon, lat) {
+  if (!rings.length || !pointInRing(lon, lat, rings[0])) return false;
+  for (let i = 1; i < rings.length; i++) if (pointInRing(lon, lat, rings[i])) return false;
+  return true;
+}
+
+// Прямокутник навколо полігона рахуємо один раз і кладемо на сам об'єкт: без
+// нього кожне оновлення перебирало б усі вершини всіх полігонів у тривозі.
+function featureBBox(feature) {
+  if (feature.__bbox) return feature.__bbox;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const polys = feature.geometry?.type === 'MultiPolygon'
+    ? feature.geometry.coordinates
+    : [feature.geometry?.coordinates || []];
+  for (const rings of polys) {
+    for (const [x, y] of rings[0] || []) {
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  const bbox = [minX, minY, maxX, maxY];
+  Object.defineProperty(feature, '__bbox', { value: bbox, enumerable: false, configurable: true });
+  return bbox;
+}
+
+function featureContains(feature, lon, lat) {
+  const [minX, minY, maxX, maxY] = featureBBox(feature);
+  if (lon < minX || lon > maxX || lat < minY || lat > maxY) return false;
+  const polys = feature.geometry?.type === 'MultiPolygon'
+    ? feature.geometry.coordinates
+    : [feature.geometry?.coordinates || []];
+  return polys.some(rings => polygonContains(rings, lon, lat));
+}
+
+// Скільки точок кола невизначеності пробуємо, окрім центра.
+const ALERT_ZONE_PROBES = 8;
+
+// Перевіряємо не точку, а коло невизначеності. Позиція відома з точністю
+// ±4…25 км, тож строгий тест по центру сховав би цілі, що лежать одразу за
+// межею району в тривозі — а це найчастіший випадок на підльоті.
+function isInsideAlertZone(threat) {
+  // Полігони ще не завантажені — перевірку пропускаємо. Інакше на старті, поки
+  // межі вантажаться, карта сховала б усе.
+  if (!alertedPolygons.length) return true;
+
+  const cached = threat.__alertZone;
+  if (cached && cached.version === alertZoneVersion) return cached.inside;
+
+  const lat = Number(threat?.lat), lon = Number(threat?.lon);
+  let inside = false;
+  if (Number.isFinite(lat) && Number.isFinite(lon)) {
+    inside = alertedPolygons.some(f => featureContains(f, lon, lat));
+    const radiusKm = threatUncertaintyKm(threat);
+    if (!inside && radiusKm) {
+      for (let i = 0; i < ALERT_ZONE_PROBES && !inside; i++) {
+        const p = destinationPoint(lat, lon, (i * 360) / ALERT_ZONE_PROBES, radiusKm);
+        inside = alertedPolygons.some(f => featureContains(f, p.lon, p.lat));
+      }
+    }
+  }
+
+  Object.defineProperty(threat, '__alertZone', {
+    value: { version: alertZoneVersion, inside },
+    enumerable: false, configurable: true, writable: true
+  });
+  return inside;
+}
+
+// Причина, з якої ціль не потрапила на карту. Повертаємо саме причину, а не
+// булеве значення: без неї неможливо сказати, яка з перевірок скільки зрізала.
+function threatRejectionReason(threat) {
+  // Область — не ціль, і це не залежить ні від каналу, ні від кількості джерел.
+  // Перевірка йде першою: раніше згадка в каналі пропускала й обласний запис.
+  if (isAreaOnlyThreat(threat)) return 'area';
+
+  // Ціль над районом, у якому тривоги немає, — майже завжди хиба даних.
+  if (!isInsideAlertZone(threat)) return 'no-alert-zone';
+
   // Згадка в каналі — незалежне людське підтвердження, вагоміше за будь-який
   // поріг по sourceCount. Якщо канал назвав цей населений пункт, ціль показуємо.
-  if (channelMatchForThreat(threat)) return true;
-  // areaOnly — це не ціль. NEPTUN прямо пише «попередження по області, точка
-  // невідома», а ми ставили маркер у геометричний центр області: місце, де за
-  // власним визнанням джерела нічого немає. Сама тривога вже показана заливкою
-  // області, тож фантомна точка не додає інформації, лише вигадує її.
-  if (isAreaOnlyThreat(threat)) return false;
-  if (isConfirmedThreat(threat)) return true;
+  if (channelMatchForThreat(threat)) return null;
+
+  // Підтвердження потрібне всім, і 'confirmed' теж: раніше цей статус проходив
+  // сам по собі, навіть з одним джерелом. Винятку для positionQuality тут немає
+  // навмисно — заміряно, що 'confirmed' у ньому збігається з lifecycle
+  // 'confirmed' у 8 випадках із 8, тобто це не незалежний сигнал, а той самий
+  // під іншою назвою, і як виняток він робив цю перевірку порожньою.
   const uncertaintyKm = threatUncertaintyKm(threat) || 0;
   const needed = uncertaintyKm > VAGUE_POSITION_KM ? MIN_SOURCE_COUNT_VAGUE : MIN_SOURCE_COUNT;
-  return (Number(threat?.sourceCount) || 0) >= needed;
+  return (Number(threat?.sourceCount) || 0) >= needed ? null : 'weak';
+}
+
+function isTrustedThreat(threat) {
+  return threatRejectionReason(threat) === null;
 }
 
 function visibleThreats(nowMs = Date.now()) {
   return activeThreats(nowMs).filter(isTrustedThreat);
 }
 
-// Дедуплікація для ЛІЧИЛЬНИКА. NEPTUN не зливає повідомлення різних спостерігачів
-// про один і той самий дрон, тож два треки одного типу, де один лежить усередині
-// кола невизначеності іншого й час майже збігається, рахуємо як одну ціль.
-// На карті обидва маркери лишаються: приховати реальну ціль небезпечніше, ніж
-// показати зайву.
+// Дедуплікація для лічильника Й ДЛЯ КАРТИ. NEPTUN не зливає повідомлення різних
+// спостерігачів про один і той самий дрон, тож два треки одного типу, що лежать
+// у колі невизначеності одне одного й майже збігаються в часі, — це одна ціль.
+// Раніше на карті лишались обидва маркери; від цього довелося відмовитись, бо
+// саме воно давало «забагато міток в одному місці».
 const DEDUPE_MAX_TIME_DIFF_MINUTES = 5;
 
 function dedupeThreatClusters(threats, nowMs = Date.now()) {
@@ -679,8 +802,11 @@ function dedupeThreatClusters(threats, nowMs = Date.now()) {
       const lat2 = Number(b.lat), lon2 = Number(b.lon);
       if (![lat1, lon1, lat2, lon2].every(Number.isFinite)) continue;
 
-      // Поріг — менше з двох кіл: зливаємо, лише коли одна точка справді лежить
-      // усередині невизначеності іншої. Консервативно, щоб не склеїти групу.
+      // Поріг — МЕНШЕ з двох кіл: зливаємо, лише коли точка лежить усередині
+      // невизначеності обох. Спробував був max — і на живому нальоті це злило
+      // Балаклію (13 джерел, ±4 км) із Савинцями (14 джерел, ±4 км) лише тому,
+      // що поруч лежав один розмитий запис із радіусом 25 км. Розмитий запис
+      // не має ставати магнітом, що поглинає точні й добре підтверджені цілі.
       const uncA = threatUncertaintyKm(a), uncB = threatUncertaintyKm(b);
       if (uncA === null || uncB === null) continue;
       if (distanceKmBetween(lat1, lon1, lat2, lon2) <= Math.min(uncA, uncB)) union(i, j);
@@ -762,7 +888,7 @@ function applyThreatMarkerState(el, threat) {
   el.classList.toggle('is-area-only', isAreaOnlyThreat(threat));
 }
 
-function createThreatMarkerElement(threat) {
+function createThreatMarkerElement(threat, units) {
   const meta = threatMeta(threat.type);
   const el = document.createElement('div');
   el.className = 'live-threat-marker';
@@ -777,7 +903,7 @@ function createThreatMarkerElement(threat) {
   icon.className = 'live-threat-icon';
   icon.innerHTML = threatIconSvg(meta.iconKey);
 
-  const count = threatCountSuffix(threat);
+  const count = threatCountSuffix(threat, units);
   const label = document.createElement('span');
   label.className = 'live-threat-label';
   label.textContent = `${meta.short}${count}`;
@@ -786,7 +912,7 @@ function createThreatMarkerElement(threat) {
   return el;
 }
 
-function updateThreatMarkerContent(record, threat) {
+function updateThreatMarkerContent(record, threat, units) {
   const meta = threatMeta(threat.type);
   record.el.style.setProperty('--threat-color', meta.color);
   applyThreatMarkerState(record.el, threat);
@@ -796,7 +922,7 @@ function updateThreatMarkerContent(record, threat) {
     record.iconKey = meta.iconKey;
   }
   if (record.label) {
-    const count = threatCountSuffix(threat);
+    const count = threatCountSuffix(threat, units);
     record.label.textContent = `${meta.short}${count}`;
   }
   record.threat = threat;
@@ -899,18 +1025,49 @@ function refreshThreatGeometry(nowMs = Date.now()) {
   map.getSource('neptun-threat-uncertainty')?.setData(uncertaintyToGeoJSON(nowMs));
 }
 
+// Скільки цілей і чому не потрапило на карту. Свідомо лише в консоль: рядок про
+// неточні цілі в HUD користувач уже відхиляв двічі. Але ховати мовчки й зовсім
+// без сліду небезпечно — коли фільтр помиляється, це має бути видно.
+let lastFilterSummary = '';
+
+function logFilterSummary(nowMs) {
+  const active = activeThreats(nowMs);
+  const reasons = { area: 0, 'no-alert-zone': 0, weak: 0 };
+  for (const threat of active) {
+    const reason = threatRejectionReason(threat);
+    if (reason) reasons[reason] = (reasons[reason] || 0) + 1;
+  }
+  const hidden = reasons.area + reasons['no-alert-zone'] + reasons.weak;
+  const line = `${active.length}/${hidden}/${reasons.area}/${reasons['no-alert-zone']}/${reasons.weak}`;
+  // Друкуємо лише коли картина змінилась: інакше консоль заллє однаковими рядками.
+  if (line === lastFilterSummary) return;
+  lastFilterSummary = line;
+  console.info(
+    `Фільтр цілей: активних ${active.length}, сховано ${hidden} ` +
+    `(рівень області ${reasons.area}, поза зоною тривоги ${reasons['no-alert-zone']}, ` +
+    `без підтверджень ${reasons.weak})`
+  );
+}
+
 function syncThreatMarkers() {
-  const active = visibleThreats().filter(
+  const nowMs = correctedNow();
+  logFilterSummary(nowMs);
+  const visible = visibleThreats(nowMs).filter(
     t => Number.isFinite(Number(t.lat)) && Number.isFinite(Number(t.lon))
   );
+  // Один маркер на кластер, а не на трек. Ведучий — той самий, що й у лічильнику,
+  // інакше заголовок і карта показували б різні цілі.
+  const clusters = dedupeThreatClusters(visible, nowMs);
   const activeIds = new Set();
 
-  for (const threat of active) {
+  for (const cluster of clusters) {
+    const threat = cluster.find(isConfirmedThreat) || cluster[0];
+    const units = clusterUnitCount(cluster);
     const id = String(threat.id || `${threat.type}-${threat.lat}-${threat.lon}`);
     activeIds.add(id);
     let record = threatMarkers.get(id);
     if (!record) {
-      const el = createThreatMarkerElement(threat);
+      const el = createThreatMarkerElement(threat, units);
       const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
         .setLngLat([Number(threat.lon), Number(threat.lat)])
         .addTo(map);
@@ -930,7 +1087,7 @@ function syncThreatMarkers() {
       });
       threatMarkers.set(id, record);
     } else {
-      updateThreatMarkerContent(record, threat);
+      updateThreatMarkerContent(record, threat, units);
     }
   }
 
@@ -1057,9 +1214,7 @@ function threatBreakdown(nowMs = Date.now()) {
     const lead = cluster.find(isConfirmedThreat) || cluster[0];
     const type = THREAT_META[lead.type] ? lead.type : 'unknown';
     byType.set(type, (byType.get(type) || 0) + 1);
-    // У межах кластера беремо максимум, а не суму: це повідомлення про ту саму
-    // ціль, і найдетальніше з них уже містить розмір групи.
-    units += Math.max(...cluster.map(threatUnitCount));
+    units += clusterUnitCount(cluster);
     if (cluster.some(channelMatchForThreat)) corroborated += 1;
   }
 
@@ -1365,6 +1520,10 @@ function applyNeptunAlerts(payload = {}) {
     type: 'FeatureCollection',
     features: oblastFeatures
   });
+
+  // Ті самі полігони, що пішли на підсвітку, стають зоною для фільтра цілей.
+  alertedPolygons = [...raionFeatures, ...oblastFeatures];
+  alertZoneVersion += 1;
 
   // Позначка для CSS: при обласній тривозі декор приглушується.
   document.body.classList.toggle('has-oblast-alert', oblastFeatures.length > 0);
