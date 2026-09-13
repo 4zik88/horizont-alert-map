@@ -52,12 +52,42 @@ const RELATION_CUES: { relation: Relation; source: string }[] = [
   { relation: 'towards', source: 'на' },
 ];
 
-// One alternation with a named-ish structure: cue, then the capitalised phrase after it.
-const PLACE = "([А-ЯІЇЄҐA-Z][^\\s,.;:!?()]*(?:\\s+[А-ЯІЇЄҐ][^\\s,.;:!?()]*){0,2})";
+/*
+ * Cue and place are matched by two separate expressions, and that separation is the
+ * whole point.
+ *
+ * They used to be one pattern ending in `([А-ЯІЇЄҐA-Z]\S*(?:\s+[А-ЯІЇЄҐ]\S*){0,2})`
+ * under the `i` flag — and `i` makes a Cyrillic *uppercase range* match lowercase
+ * too, so the "capitalised" requirement was silently void. "повз Димер в напрямку
+ * Вишгорода" captured the place as "Димер в напрямку": the continuation words were
+ * swallowed, the second cue was never seen, and the line yielded a waypoint with no
+ * destination — hence no course. Same family as the `\b` bug: a regex assumption
+ * that quietly does not hold for Cyrillic.
+ *
+ * So cues match case-insensitively (they are lowercase words), and the place is then
+ * read off the remaining text with a case-SENSITIVE pattern.
+ */
 const CUE_RE = new RegExp(
-  `${BOUNDARY_LEFT}(${RELATION_CUES.map((c) => c.source).join('|')})\\s+${PLACE}`,
+  `${BOUNDARY_LEFT}(${RELATION_CUES.map((c) => c.source).join('|')})\\s+`,
   'giu',
 );
+
+/*
+ * Filler between the cue and the name: "у напрямку центру Києва", "на н.п. Гуляйполе".
+ * Without it the capitalised name is never reached and the cue is discarded.
+ */
+const PLACE_FILLER = '(?:(?:центр[ауі]|окол[иі]ц[іь]|н\\.?\\s?п\\.?|м\\.|с\\.|смт)\\s+)?';
+const CAP_WORD = '[А-ЯІЇЄҐA-Z][^\\s,.;:!?()]*';
+/** `u` but deliberately NOT `i` — the capitalisation is the signal. */
+const PLACE_RE = new RegExp(
+  `^${PLACE_FILLER}(${CAP_WORD}(?:\\s+${CAP_WORD}){0,2}|міст[оаиуе]м?)`,
+  'u',
+);
+
+/** The phrase a cue points at, or undefined when it points at nothing nameable. */
+function placeAfter(text: string): string | undefined {
+  return PLACE_RE.exec(text)?.[1];
+}
 
 function relationFor(cue: string): Relation {
   const normalised = cue.toLowerCase().replace(/\s+/g, ' ');
@@ -169,7 +199,10 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
   }
   if (type !== 'unknown' && !inferred) context.type = type;
 
-  const matches = [...rest.matchAll(CUE_RE)];
+  CUE_RE.lastIndex = 0;
+  const matches = [...rest.matchAll(CUE_RE)]
+    .map((m) => ({ cue: m[1]!, phrase: placeAfter(rest.slice(m.index + m[0].length)) }))
+    .filter((m): m is { cue: string; phrase: string } => m.phrase !== undefined);
   if (matches.length === 0) return [];
 
   // Two passes. An oblast named in a line is usually *context* — "БпЛА на
@@ -177,7 +210,7 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
   // Korosten, not heading for the oblast — so oblasts are resolved first and used to
   // disambiguate the settlements, and only stand in as a destination when the line
   // names no settlement at all ("КАБи на Дніпропетровщину").
-  const cues = matches.map((m) => ({ relation: relationFor(m[1]!), phrase: m[2]! }));
+  const cues = matches.map((m) => ({ relation: relationFor(m.cue), phrase: m.phrase }));
 
   for (const cue of cues) {
     const oblast = matchOblast(cue.phrase) ?? matchOblast(cue.phrase.split(/\s+/)[0] ?? '');

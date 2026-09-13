@@ -79,8 +79,13 @@ export class Gazetteer {
     if (!cleaned) return undefined;
 
     // A region name is a valid, if coarse, answer: "КАБи на Дніпропетровщину".
+    //
+    // Kyiv is the exception: it is both a region and the most-reported city in the
+    // country. Resolving it as a region gave every Kyiv target confidence 0.5 and
+    // kept it out of the settlement ranking entirely, so "в р-ні Вишгорода у
+    // напрямку Києва" could never pair an origin with a destination.
     const oblast = matchOblast(cleaned) ?? matchOblast(cleaned.split(/\s+/)[0] ?? '');
-    if (oblast) {
+    if (oblast && !oblast.cityRegion) {
       return {
         name: oblast.name,
         lat: oblast.centreLat,
@@ -110,6 +115,18 @@ export class Gazetteer {
         oblast: best.oblast,
         kind: 'settlement',
         confidence: confidenceOf(pool.length, inOblast.length > 0),
+      };
+    }
+
+    // A city region whose name is not in the gazetteer still resolves as a region.
+    if (oblast) {
+      return {
+        name: oblast.name,
+        lat: oblast.centreLat,
+        lon: oblast.centreLon,
+        oblast: oblast.key,
+        kind: 'oblast',
+        confidence: 0.5,
       };
     }
 

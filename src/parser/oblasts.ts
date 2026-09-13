@@ -18,6 +18,12 @@ export interface Oblast {
   aliases: string[];
   centreLat: number;
   centreLon: number;
+  /**
+   * Kyiv is an oblast-level unit *and* a city. Alerts treat it as a region, but a
+   * message saying "у напрямку Києва" means the city — so resolution prefers the
+   * gazetteer settlement and only falls back to the region.
+   */
+  cityRegion?: true;
 }
 
 export const OBLASTS: Oblast[] = [
@@ -46,7 +52,7 @@ export const OBLASTS: Oblast[] = [
   { key: 'chernivetska', name: 'Чернівецька', aliases: ['Буковина', 'Чернівеччина', 'Чернівецька'], centreLat: 48.2917, centreLon: 25.9352 },
   { key: 'chernihivska', name: 'Чернігівська', aliases: ['Чернігівщина', 'Чернігівська'], centreLat: 51.4982, centreLon: 31.2893 },
   { key: 'krym', name: 'Крим', aliases: ['Крим', 'Кримський'], centreLat: 45.3, centreLon: 34.4 },
-  { key: 'kyiv', name: 'Київ', aliases: ['Київ'], centreLat: 50.4501, centreLon: 30.5234 },
+  { key: 'kyiv', name: 'Київ', aliases: ['Київ'], centreLat: 50.4501, centreLon: 30.5234, cityRegion: true },
 ];
 
 /** KATOTTH / KOATUU codes start with a two-digit oblast code — how gazetteer rows get an oblast. */
