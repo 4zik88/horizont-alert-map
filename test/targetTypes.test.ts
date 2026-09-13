@@ -21,6 +21,23 @@ describe('classifyType', () => {
     }
   });
 
+  /*
+   * The weapon, never the platform that launched it. "Пуски керованих авіаційних
+   * бомб ворожою тактичною авіацією" is a guided-bomb attack; reading it as
+   * "aviation" because the sentence mentions aircraft mislabels the threat and puts
+   * the wrong speed behind every distance estimate.
+   */
+  test('classifies by the munition, not the aircraft carrying it', () => {
+    assert.equal(
+      classifyType('Пуски керованих авіаційних бомб ворожою тактичною авіацією на Одещину.'),
+      'kab',
+    );
+    assert.equal(classifyType('авіаційні бомби на Запоріжжя'), 'kab');
+    assert.equal(classifyType('Launches of UMPB-5 munitions'), 'kab');
+    // The aircraft itself, with no munition named, is still aviation.
+    assert.equal(classifyType('Тактична авіація в повітрі'), 'aviation');
+  });
+
   // "Реактивний БпЛА" must not fall through to plain uav — a jet UAV is several
   // times faster, which changes every distance and ETA estimate downstream.
   test('prefers the more specific class', () => {

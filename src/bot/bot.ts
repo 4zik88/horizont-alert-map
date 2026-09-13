@@ -125,7 +125,7 @@ export class Bot {
         break;
       case '/stop':
         this.users.setStopped(chatId, Date.now());
-        await trySend(this.api, chatId, '🔕 Оповещения отключены. /start — включить снова.');
+        await trySend(this.api, chatId, '🔕 Сповіщення вимкнено. /start — увімкнути знову.');
         break;
       default:
         await trySend(this.api, chatId, HELP);
@@ -160,11 +160,11 @@ export class Bot {
     // Never echo the coordinates back — they would then sit in Telegram's history and
     // in any screenshot of the chat.
     const where = oblast ? ` (${oblast} обл.)` : '';
-    const mode = live ? 'Live-локация принята, буду обновлять автоматически.' : 'Локация сохранена.';
+    const mode = live ? 'Live-локацію прийнято, оновлюватиму автоматично.' : 'Локацію збережено.';
     await trySend(
       this.api,
       chatId,
-      `📍 ${mode}${where}\nРадиус оповещения: ${user?.radius_km ?? DEFAULT_RADIUS_KM} км.\nИзменить: /radius 30`,
+      `📍 ${mode}${where}\nРадіус сповіщення: ${user?.radius_km ?? DEFAULT_RADIUS_KM} км.\nЗмінити: /radius 30`,
     );
   }
 
@@ -174,34 +174,34 @@ export class Bot {
 
     if (!Number.isFinite(value)) {
       const current = this.users.get(chatId)?.radius_km ?? DEFAULT_RADIUS_KM;
-      await trySend(this.api, chatId, `Текущий радиус: ${current} км.\nИзменить: /radius 30`);
+      await trySend(this.api, chatId, `Поточний радіус: ${current} км.\nЗмінити: /radius 30`);
       return;
     }
 
     if (value < MIN_RADIUS_KM || value > MAX_RADIUS_KM) {
-      await trySend(this.api, chatId, `Радиус должен быть от ${MIN_RADIUS_KM} до ${MAX_RADIUS_KM} км.`);
+      await trySend(this.api, chatId, `Радіус має бути від ${MIN_RADIUS_KM} до ${MAX_RADIUS_KM} км.`);
       return;
     }
 
     this.users.updateRadius(chatId, value, Date.now());
-    await trySend(this.api, chatId, `✅ Радиус оповещения: ${value} км.`);
+    await trySend(this.api, chatId, `✅ Радіус сповіщення: ${value} км.`);
   }
 
   private statusText(chatId: number): string {
     const user = this.users.get(chatId);
-    if (!user) return 'Вы ещё не зарегистрированы. Отправьте /start.';
+    if (!user) return 'Ви ще не зареєстровані. Надішліть /start.';
 
     const lines = [
-      `Оповещения: ${user.is_active ? 'включены' : 'отключены'}`,
-      `Радиус: ${user.radius_km} км`,
+      `Сповіщення: ${user.is_active ? 'увімкнено' : 'вимкнено'}`,
+      `Радіус: ${user.radius_km} км`,
     ];
 
     if (user.lat === null) {
-      lines.push('Локация: не задана — отправьте геолокацию');
+      lines.push('Локація: не задана — надішліть геолокацію');
     } else {
       const oblast = user.oblast ? oblastByKey(user.oblast)?.name : undefined;
       const live = user.location_kind === 'live' && (user.live_until ?? 0) > Date.now();
-      lines.push(`Локация: ${live ? 'live, обновляется' : 'сохранена'}${oblast ? `, ${oblast} обл.` : ''}`);
+      lines.push(`Локація: ${live ? 'live, оновлюється' : 'збережена'}${oblast ? `, ${oblast} обл.` : ''}`);
     }
 
     return lines.join('\n');

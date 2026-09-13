@@ -3,10 +3,10 @@
 Private air-target tracking for Ukraine. Closed tool for a handful of people — no
 registration, no indexing, map reachable only via a secret token in the URL.
 
-**Steps 1-3 done: ingest, parse, notify.** Polls the public HTML preview of three
-Telegram channels, extracts structured targets (type, direction, settlement with
-coordinates), and warns a closed list of users by Telegram DM when a target is near
-them or heading their way. No map yet.
+Polls the public HTML preview of three Telegram channels, extracts structured
+targets (type, direction, settlement with coordinates), warns a closed list of users
+by Telegram DM when a target is near them or heading their way, and serves a private
+Leaflet PWA map.
 
 ## Sources
 
@@ -262,6 +262,64 @@ clear everywhere", which would fire a false all-clear to everyone at once.
 
 Without `ALERTS_IN_UA_TOKEN` this part simply does not start.
 
+## The map (step 4)
+
+A single Leaflet page, no bundler, installable to a phone home screen. Reachable only
+through a secret link.
+
+```bash
+npm run map:token         # prints a token and the one-time link
+npm run build:boundaries  # oblast polygons for the alert overlay (one-off, resumable)
+npm run build:icons       # PWA icons (already committed)
+```
+
+### Access
+
+The token appears once, in the path (`/t/<token>`), is exchanged for an httpOnly
+cookie, and the browser is redirected to a clean URL. A token left in a query string
+leaks through the `Referer` header to every tile request and into Railway's access
+logs; this way it never travels. Anything unauthorised gets a flat **404, never 403** —
+a 403 would confirm that a valid link exists to be guessed. `/healthz` and
+`robots.txt` stay public, and every response carries `noindex`.
+
+### On the map
+
+- **Alert polygons** shaded by level: red for a declared air-raid alert, yellow for a
+  threat without one.
+- **Target silhouettes** rotated to their course — a delta wing for a drone, a finned
+  cylinder for a missile, a swept airframe for aircraft — each labelled with its type.
+  A target with no known heading is drawn upright inside a dashed ring rather than
+  pointed north, because inventing a direction is worse than admitting none.
+- **Your position** from the browser, with your radius circle. It is computed in the
+  page and **never sent to the server**; the last fix is remembered in `localStorage`
+  so a reload does not blank it, and is discarded after 12 hours rather than drawing a
+  stale circle.
+- **The feed**, carrying parsed and unparsed messages alike — unresolved text appears
+  as text, with no marker.
+- Targets fade as they age and are gone by 30 minutes.
+
+Tiles come from OpenStreetMap, darkened with a CSS filter rather than a dark-themed
+provider, because every free dark basemap now requires an API key that can expire or
+be revoked. Swap providers with `MAP_TILE_URL` / `MAP_TILE_ATTRIBUTION` /
+`MAP_TILE_DARKEN` — no code change. Note that a `no-referrer` policy gets tile
+requests rejected: the page sends `strict-origin`, which identifies it without
+revealing any path.
+
+### Where alert data comes from
+
+Default is **alerts.in.ua's public situation report** (`/v3/alerts/active.md`) —
+published for unauthenticated use, continuously updated, and the only keyless source
+tested that separates the standing administrative alerts over occupied territory from
+live ones. That distinction is not cosmetic: `alerts.com.ua` was measured reporting a
+single alert (Luhansk, nominal) at a moment when eight oblasts were genuinely under
+one. A third source, `vadimklimenko.com`, was rejected outright — its newest state
+change was from 2022.
+
+Set `ALERTS_IN_UA_TOKEN` to use their tokened API instead; `ALERTS_PROVIDER` forces a
+specific source. A report whose shape is unrecognised yields *nothing* rather than an
+empty alert map, since an empty map would read as a nationwide all-clear and fire a
+false відбій to every user at once.
+
 ## Constraints
 
 - **No air-defence positions, no impacts.** Messages matching the deny-list in
@@ -275,6 +333,7 @@ Without `ALERTS_IN_UA_TOKEN` this part simply does not start.
 - Message text *is* logged at debug level. It is public channel content, and it is how
   the step-2 parser gets debugged against real traffic.
 
-## Next
+## Possible next steps
 
-4. Map: alert polygons, target markers with course arrows, mobile-first PWA.
+- Raion-level alert polygons (the report carries them; only oblasts are drawn today).
+- Map: alert polygons, target markers with course arrows, mobile-first PWA.

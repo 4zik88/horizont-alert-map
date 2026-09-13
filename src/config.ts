@@ -12,7 +12,7 @@ const schema = z.object({
 
   CHANNELS: z
     .string()
-    .default('kpszsu,KozakChornobay,sectorv666')
+    .default('kpszsu,KozakChornobay,sectorv666,monikppy')
     .transform(csv)
     .refine((v) => v.length > 0, 'CHANNELS must list at least one channel'),
 
@@ -54,9 +54,20 @@ const schema = z.object({
   NOTIFY_COURSE_TOLERANCE_DEG: z.coerce.number().min(1).max(90).default(30),
   NOTIFY_LEAD_MINUTES: z.coerce.number().min(1).max(180).default(25),
 
+  // 'auto' uses alerts.in.ua's tokened API when a token is set, and its public
+  // situation report otherwise — so alerts are correct with no signup at all.
+  ALERTS_PROVIDER: z
+    .enum(['auto', 'alerts_in_ua_public', 'alerts_com_ua', 'alerts_in_ua'])
+    .default('auto'),
   ALERTS_IN_UA_TOKEN: z.string().optional(),
-  ALERTS_POLL_INTERVAL_MS: z.coerce.number().int().min(10_000).default(30_000),
-  MAP_TOKEN: z.string().optional(),               // step 4
+  ALERTS_POLL_INTERVAL_MS: z.coerce.number().int().min(5_000).default(15_000),
+
+  // Step 4. Without MAP_TOKEN the map is not served at all; `npm run map:token`
+  // generates one.
+  MAP_TOKEN: z.string().optional(),
+  PUBLIC_DIR: z.string().default('./public'),
+  MAP_TARGET_WINDOW_MS: z.coerce.number().int().min(60_000).default(3_600_000),
+  MAP_FEED_LIMIT: z.coerce.number().int().min(10).max(500).default(120),
 });
 
 export type Config = z.infer<typeof schema>;

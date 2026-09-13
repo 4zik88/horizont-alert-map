@@ -17,7 +17,11 @@
     "build:toponyms": "tsx --env-file-if-exists=.env scripts/build-toponyms.ts",
     "coverage": "tsx --env-file-if-exists=.env scripts/parser-coverage.ts",
     "llm:check": "tsx --env-file-if-exists=.env scripts/llm-check.ts",
-    "bot:check": "tsx --env-file-if-exists=.env scripts/bot-check.ts"
+    "bot:check": "tsx --env-file-if-exists=.env scripts/bot-check.ts",
+    "build:boundaries": "tsx --env-file-if-exists=.env scripts/build-boundaries.ts",
+    "build:icons": "tsx scripts/build-icons.ts",
+    "map:token": "tsx scripts/map-token.ts",
+    "build:raions": "tsx --env-file-if-exists=.env scripts/build-raions.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.125.0",

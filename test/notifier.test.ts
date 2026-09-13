@@ -69,7 +69,7 @@ describe('Notifier', () => {
     assert.equal(sent.length, 1);
     assert.match(sent[0]!.text, /БпЛА/);
     assert.match(sent[0]!.text, /Охтирка/);
-    assert.match(sent[0]!.text, /км от вас/);
+    assert.match(sent[0]!.text, /км від вас/);
   });
 
   test('leaves a distant user alone', async () => {
@@ -181,7 +181,7 @@ describe('formatAlertBatch', () => {
   test('formats a single alert exactly as the spec asks', () => {
     assert.equal(
       formatAlertBatch([line({ reason: 'heading_towards', distanceKm: 23.4 })]),
-      '⚠️ БпЛА, курс на Охтирка, ~23 км от вас',
+      '⚠️ БпЛА, курс на Охтирка, ~23 км від вас',
     );
   });
 

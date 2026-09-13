@@ -37,3 +37,35 @@ export function extractCourse(line: string): number | null {
   }
   return null;
 }
+
+/**
+ * A stated *approach* direction — "БпЛА в напрямку Охтирки з північного сходу".
+ *
+ * This says where the target came from, so the heading is the reciprocal. It is a
+ * separate rule from `extractCourse` because the same compass word means the
+ * opposite thing depending on whether it follows "курс" or "з".
+ */
+const FROM_DIRECTION = /(?<![\p{L}])(?:з|із|зі)\s+(північно[- ]?схід|південно[- ]?схід|південно[- ]?захід|північно[- ]?захід|північн|південн|східн|західн|півноч|півдн|сход|заход)/iu;
+
+const FROM_DEGREES: { deg: number; test: RegExp }[] = [
+  { deg: 45, test: /північно[- ]?схід/iu },
+  { deg: 135, test: /південно[- ]?схід/iu },
+  { deg: 225, test: /південно[- ]?захід/iu },
+  { deg: 315, test: /північно[- ]?захід/iu },
+  { deg: 0, test: /північн|півноч/iu },
+  { deg: 90, test: /східн|сход/iu },
+  { deg: 180, test: /південн|півдн/iu },
+  { deg: 270, test: /західн|заход/iu },
+];
+
+export function extractApproachCourse(line: string): number | null {
+  const match = FROM_DIRECTION.exec(line);
+  if (!match) return null;
+
+  const phrase = match[1]!;
+  for (const entry of FROM_DEGREES) {
+    // Coming *from* the north-east means travelling south-west.
+    if (entry.test.test(phrase)) return (entry.deg + 180) % 360;
+  }
+  return null;
+}

@@ -1,16 +1,16 @@
 import type { TargetType } from '../parser/targetTypes.js';
 import type { MatchReason } from '../notify/proximity.js';
 
-/** Bot copy is Russian, matching the wording the spec asked for. */
+/** Bot copy is Ukrainian, matching the map and the settlement names themselves. */
 const TYPE_LABELS: Record<TargetType, string> = {
   uav: 'БпЛА',
-  jet_uav: 'Реактивный БпЛА',
-  cruise: 'Крылатая ракета',
-  ballistic: 'Баллистика',
+  jet_uav: 'Реактивний БпЛА',
+  cruise: 'Крилата ракета',
+  ballistic: 'Балістика',
   kab: 'КАБ',
-  aviation: 'Авиация',
-  recon: 'Разведчик',
-  unknown: 'Цель',
+  aviation: 'Авіація',
+  recon: 'Розвідник',
+  unknown: 'Ціль',
 };
 
 export function typeLabel(type: TargetType): string {
@@ -25,7 +25,7 @@ export interface AlertLine {
   reason: MatchReason;
 }
 
-/** "⚠️ БпЛА, курс на Охтирка, ~23 км от вас" — the format the spec specified. */
+/** "⚠️ БпЛА, курс на Охтирка, ~23 км від вас" — the format the spec specified. */
 export function formatAlertLine(line: AlertLine): string {
   const count = line.count > 1 ? ` ×${line.count}` : '';
   const where = line.toName
@@ -33,10 +33,10 @@ export function formatAlertLine(line: AlertLine): string {
       ? `район ${line.toName}`
       : `курс на ${line.toName}`
     : line.reason === 'in_radius'
-      ? 'рядом с вами'
-      : 'курс в вашу сторону';
+      ? 'поруч із вами'
+      : 'курс у ваш бік';
 
-  return `⚠️ ${typeLabel(line.type)}${count}, ${where}, ~${Math.round(line.distanceKm)} км от вас`;
+  return `⚠️ ${typeLabel(line.type)}${count}, ${where}, ~${Math.round(line.distanceKm)} км від вас`;
 }
 
 /**
@@ -77,16 +77,16 @@ function dedupe(lines: AlertLine[]): AlertLine[] {
 }
 
 export const HELP = [
-  '🛡 <b>Horizont</b> — оповещение о воздушных целях.',
+  '🛡 <b>Horizont</b> — сповіщення про повітряні цілі.',
   '',
-  'Отправьте свою геолокацию (скрепка → Location), чтобы получать предупреждения.',
-  'Live-локация обновляется автоматически, пока она активна.',
+  'Надішліть свою геолокацію (скріпка → Location), щоб отримувати попередження.',
+  'Live-локація оновлюється автоматично, поки вона активна.',
   '',
-  '<b>Команды</b>',
-  '/radius 30 — радиус оповещения в км (сейчас по умолчанию 40)',
-  '/status — текущие настройки',
-  '/stop — отключить оповещения',
-  '/start — включить снова',
+  '<b>Команди</b>',
+  '/radius 30 — радіус сповіщення в км (типово 40)',
+  '/status — поточні налаштування',
+  '/stop — вимкнути сповіщення',
+  '/start — увімкнути знову',
   '',
-  'Координаты хранятся только на сервере и никуда не передаются.',
+  'Координати зберігаються лише на сервері й нікуди не передаються.',
 ].join('\n');

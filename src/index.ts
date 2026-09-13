@@ -2,6 +2,7 @@ import { config, redactedConfig } from './config.js';
 import { closeDb, openDb } from './db/index.js';
 import { Repo } from './db/repo.js';
 import { startServer } from './http/server.js';
+import { MapApi } from './http/api.js';
 import { logger } from './logger.js';
 import { createExtractor } from './parser/llm.js';
 import { Gazetteer } from './parser/gazetteer.js';
@@ -25,9 +26,22 @@ async function main(): Promise<void> {
   const db = openDb(config.DB_PATH);
   const repo = new Repo(db);
 
-  const server = startServer(repo, {
+  // The map is served only when a token is configured; without one the service is
+  // still a healthy web service, it just has nothing public to show.
+  const mapApi = config.MAP_TOKEN
+    ? new MapApi(db, {
+        targetWindowMs: config.MAP_TARGET_WINDOW_MS,
+        feedLimit: config.MAP_FEED_LIMIT,
+      })
+    : undefined;
+  if (!config.MAP_TOKEN) {
+    logger.info('MAP_TOKEN not set — the map is disabled (run `npm run map:token`)');
+  }
+
+  const server = startServer(repo, mapApi, {
     port: config.PORT,
     pollIntervalMs: config.POLL_INTERVAL_MS,
+    publicDir: config.PUBLIC_DIR,
   });
 
   const poller = new Poller(repo, {
@@ -50,6 +64,7 @@ async function main(): Promise<void> {
   // The bot, notifier and alert watcher are optional: without a token the service
   // still ingests and parses, so it deploys cleanly before any secret is configured.
   const stoppables: { stop(): Promise<void> }[] = [];
+  let telegramApi: TelegramApi | undefined;
 
   if (config.TELEGRAM_BOT_TOKEN) {
     const recipients = allowedChatIds().length + allowedUsernames().length;
@@ -61,6 +76,7 @@ async function main(): Promise<void> {
     }
 
     const api = new TelegramApi(config.TELEGRAM_BOT_TOKEN);
+    telegramApi = api;
     const users = new Users(db);
     const state = new AppState(db);
     const gazetteer = new Gazetteer(db);
@@ -85,20 +101,31 @@ async function main(): Promise<void> {
     notifier.start();
     stoppables.push(notifier);
 
-    if (config.ALERTS_IN_UA_TOKEN) {
-      const watcher = new AlertWatcher(db, users, api, {
-        token: config.ALERTS_IN_UA_TOKEN,
-        intervalMs: config.ALERTS_POLL_INTERVAL_MS,
-        timeoutMs: 15_000,
-      });
-      watcher.start();
-      stoppables.push(watcher);
-    } else {
-      logger.info('ALERTS_IN_UA_TOKEN not set — oblast alert start/all-clear disabled');
-    }
+
   } else {
     logger.info('TELEGRAM_BOT_TOKEN not set — bot and notifications disabled');
   }
+
+  /*
+   * Alerts are polled regardless of the bot.
+   *
+   * This used to sit inside the bot block, so with no bot token nothing was fetched
+   * and the map reported "0 alerts" while raids were in progress. The map needs this
+   * state as much as the bot does; sending DMs is the only part that needs Telegram.
+   */
+  const alertProvider =
+    config.ALERTS_PROVIDER !== 'auto'
+      ? config.ALERTS_PROVIDER
+      : config.ALERTS_IN_UA_TOKEN ? 'alerts_in_ua' : 'alerts_in_ua_public';
+
+  const watcher = new AlertWatcher(db, new Users(db), telegramApi, {
+    provider: alertProvider,
+    token: config.ALERTS_IN_UA_TOKEN,
+    intervalMs: config.ALERTS_POLL_INTERVAL_MS,
+    timeoutMs: 15_000,
+  });
+  watcher.start();
+  stoppables.push(watcher);
 
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {

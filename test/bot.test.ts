@@ -80,7 +80,7 @@ describe('Bot commands', () => {
     assert.equal(user?.lat, 50.31);
     assert.equal(user?.location_kind, 'static');
     assert.equal(user?.oblast, 'sumska', 'resolved from the nearest settlement');
-    assert.match(sent.at(-1)!.text, /Локация сохранена/);
+    assert.match(sent.at(-1)!.text, /Локацію збережено/);
   });
 
   // Coordinates must not be echoed back: they would then sit in Telegram history
@@ -138,14 +138,14 @@ describe('Bot commands', () => {
     await feed(text(100, '/start'));
     await feed(text(100, '/radius 5000'));
     assert.equal(users.get(100)?.radius_km, 40, 'unchanged');
-    assert.match(sent.at(-1)!.text, /от 5 до 200/);
+    assert.match(sent.at(-1)!.text, /від 5 до 200/);
   });
 
   test('/radius with no number reports the current value', async () => {
     const { feed, sent } = setup();
     await feed(text(100, '/start'));
     await feed(text(100, '/radius'));
-    assert.match(sent.at(-1)!.text, /Текущий радиус: 40 км/);
+    assert.match(sent.at(-1)!.text, /Поточний радіус: 40 км/);
   });
 
   test('/stop deactivates but keeps the settings', async () => {
@@ -176,7 +176,7 @@ describe('Bot commands', () => {
     await feed(text(100, '/start'));
     await feed(location(100, 50.31, 34.6));
     await feed(text(100, '/status'));
-    assert.match(sent.at(-1)!.text, /включены/);
+    assert.match(sent.at(-1)!.text, /увімкнено/);
     assert.match(sent.at(-1)!.text, /40 км/);
   });
 
@@ -192,6 +192,6 @@ describe('Bot commands', () => {
   test('unknown input gets the help text', async () => {
     const { feed, sent } = setup();
     await feed(text(100, 'привет'));
-    assert.match(sent.at(-1)!.text, /Команды/);
+    assert.match(sent.at(-1)!.text, /Команди/);
   });
 });

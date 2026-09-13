@@ -173,6 +173,26 @@ CREATE TABLE app_state (
 ) STRICT;
 `,
   },
+  {
+    version: 4,
+    name: 'alert_levels',
+    sql: `
+-- Alert severity, not just on/off: several oblasts run a yellow level for drone
+-- threat and a red one for missile threat, and the map paints them differently.
+ALTER TABLE oblast_alerts ADD COLUMN level TEXT NOT NULL DEFAULT 'none';
+UPDATE oblast_alerts SET level = CASE WHEN active = 1 THEN 'full' ELSE 'none' END;
+`,
+  },
+  {
+    version: 5,
+    name: 'alert_areas',
+    sql: `
+-- The individual raions under warning, as a JSON array of normalised names.
+-- Alerts are declared per raion; shading a whole oblast because one raion is warned
+-- overstates the emergency across an area the size of a small country.
+ALTER TABLE oblast_alerts ADD COLUMN areas TEXT NOT NULL DEFAULT '[]';
+`,
+  },
 ];
 
 export function migrate(db: Database, onApplied?: (m: Migration) => void): number {

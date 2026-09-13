@@ -1,8 +1,8 @@
 import type { Gazetteer, Resolution } from './gazetteer.js';
 import { matchOblast } from './oblasts.js';
 import { BOUNDARY_LEFT } from './regex.js';
-import { classifyType, extractCount, type TargetType } from './targetTypes.js';
-import { extractCourse } from './compass.js';
+import { classifyType, extractCount, inferBareType, type TargetType } from './targetTypes.js';
+import { extractApproachCourse, extractCourse } from './compass.js';
 
 /** How a target relates to the place named. */
 export type Relation = 'towards' | 'past' | 'through' | 'over' | 'from';
@@ -158,8 +158,16 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
   }
   CUE_RE.lastIndex = 0;
 
-  const type = classifyType(rest, context.type);
-  if (type !== 'unknown') context.type = type;
+  let type = classifyType(rest, context.type);
+  let inferred = false;
+  if (type === 'unknown') {
+    const guess = inferBareType(rest);
+    if (guess) {
+      type = guess;
+      inferred = true;
+    }
+  }
+  if (type !== 'unknown' && !inferred) context.type = type;
 
   const matches = [...rest.matchAll(CUE_RE)];
   if (matches.length === 0) return [];
@@ -204,10 +212,41 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
 
   hits.sort((a, b) => RELATION_RANK[b.relation] - RELATION_RANK[a.relation]);
   const destination = hits[0]!;
+
   // A weaker cue in the same line is where it came from, not a second target.
-  const origin = hits.find((h) => h !== destination && h.place.name !== destination.place.name);
+  const origin = hits.find(
+    (h) => h !== destination && h.place.name !== destination.place.name,
+  );
+
+  // A region named alongside the destination is a much coarser origin, used only
+  // when nothing better is available — see the course resolution below.
+  const regionOrigin = origin
+    ? undefined
+    : regions.find((r) => r.place.name !== destination.place.name);
 
   const oblast = destination.place.oblast ?? context.oblast;
+
+  /*
+   * Cross-oblast movement gives a bearing even when the line names no origin.
+   * "Чернігівщина: 1 через Дмитрівку на Сумщину" is a target leaving one region for
+   * another, and the region centres describe that direction well enough to draw.
+   *
+   * Deliberately only across regions: within one oblast the centre is an arbitrary
+   * point, and a bearing from it would be noise dressed up as information.
+   */
+  let inferredOrigin: { lat: number; lon: number } | null =
+    regionOrigin ? { lat: regionOrigin.place.lat, lon: regionOrigin.place.lon } : null;
+
+  if (
+    !origin &&
+    !inferredOrigin &&
+    context.oblast &&
+    destination.place.oblast &&
+    destination.place.oblast !== context.oblast
+  ) {
+    inferredOrigin = context.gazetteer.centreOf(context.oblast) ?? null;
+  }
+
   if (destination.place.kind === 'settlement' && destination.place.oblast) {
     context.oblast = destination.place.oblast;
   }
@@ -225,15 +264,43 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
       fromName: origin?.place.name ?? null,
       fromLat: origin?.place.lat ?? null,
       fromLon: origin?.place.lon ?? null,
-      // A bearing between two named places is the best signal; a stated compass
-      // course ("курс західний") is the fallback when only one place is named.
-      courseDeg: origin
-        ? bearing(origin.place.lat, origin.place.lon, destination.place.lat, destination.place.lon)
-        : extractCourse(rest),
-      confidence: destination.place.confidence * (type === 'unknown' ? 0.7 : 1),
+      /*
+       * Course, strongest evidence first:
+       *  1. a bearing between two named settlements — the channel said both ends;
+       *  2. a course stated in words ("курс південний");
+       *  3. a stated approach direction ("з північного сходу"), reciprocated;
+       *  4. a bearing from a region centre, which is inferred and coarse.
+       *
+       * Order matters: an inferred region bearing used to override an explicitly
+       * stated compass course, which is exactly backwards.
+       */
+      courseDeg: resolveCourse(origin, destination, inferredOrigin, rest),
+      confidence:
+        destination.place.confidence * (type === 'unknown' ? 0.7 : inferred ? 0.85 : 1),
       sourceLine: cleaned,
     },
   ];
+}
+
+function resolveCourse(
+  origin: { place: Resolution } | undefined,
+  destination: { place: Resolution },
+  inferredOrigin: { lat: number; lon: number } | null,
+  line: string,
+): number | null {
+  if (origin) {
+    return bearing(
+      origin.place.lat, origin.place.lon,
+      destination.place.lat, destination.place.lon,
+    );
+  }
+
+  const stated = extractCourse(line) ?? extractApproachCourse(line);
+  if (stated !== null) return stated;
+
+  return inferredOrigin
+    ? bearing(inferredOrigin.lat, inferredOrigin.lon, destination.place.lat, destination.place.lon)
+    : null;
 }
 
 const RAW_TYPE_RE =

@@ -7,3 +7,5 @@ data/
 *.db-shm
 .DS_Store
 .claude/settings.local.json
+data/.overpass-cache.json
+data/.raions-cache.json

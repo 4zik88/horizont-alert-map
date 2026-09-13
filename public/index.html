@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<!-- viewport-fit=cover so the map reaches under the notch; the UI uses safe-area insets. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<!-- origin only: the map token is in a cookie, never in the URL, so the
+     origin leaks nothing — and tile servers reject unidentified referrers. -->
+<meta name="referrer" content="origin">
+<meta name="theme-color" content="#0d1117">
+<title>Horizont</title>
+
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Horizont">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+<link rel="stylesheet" href="/vendor/leaflet.css">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div id="map" aria-label="Карта повітряних цілей"></div>
+
+<header id="bar">
+  <div class="bar-main">
+    <span id="dot" class="dot" title="Стан джерел"></span>
+    <strong id="count">—</strong>
+    <span class="muted">цілей</span>
+  </div>
+  <div class="bar-side">
+    <span id="alerts" class="muted">тривог: —</span>
+    <span id="updated" class="muted">—</span>
+  </div>
+</header>
+
+<div id="controls">
+  <button id="locate" class="fab" aria-label="Показати моє місцезнаходження">◎</button>
+  <button id="feed-toggle" class="fab" aria-label="Стрічка повідомлень">☰</button>
+</div>
+
+<section id="sheet" class="collapsed" aria-label="Стрічка повідомлень">
+  <button id="grip" aria-label="Згорнути або розгорнути стрічку"><span></span></button>
+  <div id="sheet-head">
+    <strong>Стрічка</strong>
+    <label class="radius">
+      радіус
+      <input id="radius" type="range" min="5" max="120" step="5" value="40">
+      <output id="radius-val">40 км</output>
+    </label>
+    <button id="sheet-close" aria-label="Закрити стрічку">✕</button>
+  </div>
+  <ul id="feed"></ul>
+</section>
+
+<noscript><p class="nojs">Для карти потрібен JavaScript.</p></noscript>
+
+<script src="/vendor/leaflet.js"></script>
+<script src="/config.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
