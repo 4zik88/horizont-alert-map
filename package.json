@@ -15,7 +15,8 @@
     "backfill": "tsx --env-file-if-exists=.env scripts/backfill.ts",
     "fixtures:refresh": "tsx scripts/refresh-fixtures.ts",
     "build:toponyms": "tsx --env-file-if-exists=.env scripts/build-toponyms.ts",
-    "coverage": "tsx --env-file-if-exists=.env scripts/parser-coverage.ts"
+    "coverage": "tsx --env-file-if-exists=.env scripts/parser-coverage.ts",
+    "llm:check": "tsx --env-file-if-exists=.env scripts/llm-check.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.125.0",

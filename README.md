@@ -151,14 +151,41 @@ heading a line sits under ("Сумщина:"), then a deterministic rank — set
 first, population second. The confidence stored on each target reflects how sure that
 choice was.
 
-### The Claude fallback
+### The LLM fallback
 
-Off unless `ANTHROPIC_API_KEY` is set; the parser then runs rules-only and unresolved
-messages simply go to the feed. When enabled it uses structured outputs
-(`output_config.format` + Zod) so the response is schema-valid by construction, with
-the system prompt cached across calls. `LLM_BUDGET_PER_BATCH` caps spend per batch.
-The model is **never trusted for coordinates** — it returns place *names*, which are
-then resolved through the same gazetteer as the rules.
+Off unless a provider key is set; the parser then runs rules-only and unresolved
+messages simply go to the feed. Two providers ship behind one interface
+(`LlmExtractor`), chosen by `LLM_PROVIDER` (`auto` picks Groq if `GROQ_API_KEY` is
+set, else Anthropic, else nothing):
+
+| Provider | Cost at this volume | Notes |
+|---|---|---|
+| **Groq** (default) | free tier | OpenAI-compatible endpoint, no SDK dependency |
+| Anthropic | ~$3-10/month | structured outputs + prompt caching |
+
+The model is **never trusted for coordinates**. It returns place *names*, resolved
+through the same gazetteer as the rules, so a model that invents a town produces
+nothing rather than a wrong pin. That guard is what makes a small free model a
+reasonable choice: it can fail to help, but it cannot put a false marker on the map.
+Every failure path — rate limit, retired model name, prose instead of JSON, network
+error — returns no targets and leaves the message in the feed as text.
+
+```bash
+npm run llm:check      # lists the models your key can use, then runs the
+                       # extractor over real unresolved messages from your DB
+```
+
+Run that first. Groq rotates its model catalogue, so the `GROQ_MODEL` default will
+eventually 404 — `llm:check` prints exactly what your key accepts and flags a
+mismatch. `LLM_BUDGET_PER_BATCH` caps calls per batch.
+
+**Measured traffic:** 452 messages/day, of which ~27% (121/day) reach the fallback.
+
+Whether the LLM earns its place is worth measuring rather than assuming: many
+unresolved messages are not locatable target reports at all ("Загроза застосування
+балістичного озброєння" names no place). If `llm:check` recovers little, the rules
+are the better investment — they cost nothing per message and run in ~0.13 ms, which
+matters on a path where an alert is only useful while it is still early.
 
 Bump `PARSER_VERSION` in `src/parser/worker.ts` and requeue to re-parse the archive:
 

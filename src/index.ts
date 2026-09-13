@@ -34,7 +34,7 @@ async function main(): Promise<void> {
   });
   poller.start();
 
-  const parser = new ParseWorker(db, repo, createExtractor(new Gazetteer(db)), {
+  const parser = new ParseWorker(db, repo, await createExtractor(new Gazetteer(db)), {
     batchSize: config.PARSE_BATCH_SIZE,
     intervalMs: config.PARSE_INTERVAL_MS,
     llmBudgetPerBatch: config.LLM_BUDGET_PER_BATCH,

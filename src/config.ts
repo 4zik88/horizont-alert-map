@@ -27,10 +27,19 @@ const schema = z.object({
   // Hard ceiling on Claude calls per batch so an unusual day cannot run up a bill.
   LLM_BUDGET_PER_BATCH: z.coerce.number().int().min(0).max(500).default(20),
 
+  // 'auto' picks Groq if GROQ_API_KEY is set, else Anthropic if its key is set,
+  // else rules-only. Name a provider explicitly to override.
+  LLM_PROVIDER: z.enum(['auto', 'groq', 'anthropic', 'none']).default('auto'),
+  LLM_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(20_000),
+
+  GROQ_API_KEY: z.string().optional(),
+  // Groq rotates its catalogue; `npm run llm:check` lists what your key can use.
+  GROQ_MODEL: z.string().default('llama-3.3-70b-versatile'),
+
   // Consumed in later steps. Declared here so the shape is known and `.env.example`
   // stays honest, but never required — step 1 runs with zero secrets configured.
-  ANTHROPIC_API_KEY: z.string().optional(),       // step 2
-  ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-6'), // step 2
+  ANTHROPIC_API_KEY: z.string().optional(),
+  ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-6'),
   TELEGRAM_BOT_TOKEN: z.string().optional(),      // step 3
   ALLOWED_CHAT_IDS: z.string().optional(),        // step 3
   ALLOWED_USERNAMES: z.string().optional(),       // step 3
@@ -42,6 +51,7 @@ export type Config = z.infer<typeof schema>;
 
 /** Env vars that must never appear in a log line, a boot banner, or an error. */
 const SECRET_KEYS = [
+  'GROQ_API_KEY',
   'ANTHROPIC_API_KEY',
   'TELEGRAM_BOT_TOKEN',
   'ALERTS_IN_UA_TOKEN',
