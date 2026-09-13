@@ -7,6 +7,12 @@ import { createExtractor } from './parser/llm.js';
 import { Gazetteer } from './parser/gazetteer.js';
 import { ParseWorker } from './parser/worker.js';
 import { Poller } from './telegram/poller.js';
+import { TelegramApi } from './bot/api.js';
+import { Bot } from './bot/bot.js';
+import { AppState, Users } from './db/users.js';
+import { Notifier, DEFAULT_NOTIFIER } from './notify/notifier.js';
+import { AlertWatcher } from './alerts/watcher.js';
+import { allowedChatIds, allowedUsernames } from './bot/access.js';
 
 const SHUTDOWN_GRACE_MS = 5_000;
 
@@ -41,6 +47,59 @@ async function main(): Promise<void> {
   });
   parser.start();
 
+  // The bot, notifier and alert watcher are optional: without a token the service
+  // still ingests and parses, so it deploys cleanly before any secret is configured.
+  const stoppables: { stop(): Promise<void> }[] = [];
+
+  if (config.TELEGRAM_BOT_TOKEN) {
+    const recipients = allowedChatIds().length + allowedUsernames().length;
+    if (recipients === 0) {
+      logger.warn(
+        'TELEGRAM_BOT_TOKEN is set but ALLOWED_CHAT_IDS/ALLOWED_USERNAMES are empty — ' +
+          'the bot will ignore everyone. Add yourself to the allowlist.',
+      );
+    }
+
+    const api = new TelegramApi(config.TELEGRAM_BOT_TOKEN);
+    const users = new Users(db);
+    const state = new AppState(db);
+    const gazetteer = new Gazetteer(db);
+
+    const bot = new Bot(api, users, state, gazetteer, {
+      pollTimeoutSeconds: config.BOT_POLL_TIMEOUT_SECONDS,
+    });
+    bot.start();
+    stoppables.push(bot);
+
+    const notifier = new Notifier(db, users, state, api, {
+      ...DEFAULT_NOTIFIER,
+      intervalMs: config.NOTIFY_INTERVAL_MS,
+      cooldownMs: config.NOTIFY_COOLDOWN_MS,
+      proximity: {
+        minConfidence: config.NOTIFY_MIN_CONFIDENCE,
+        maxAgeMs: config.NOTIFY_MAX_AGE_MS,
+        courseToleranceDeg: config.NOTIFY_COURSE_TOLERANCE_DEG,
+        leadMinutes: config.NOTIFY_LEAD_MINUTES,
+      },
+    });
+    notifier.start();
+    stoppables.push(notifier);
+
+    if (config.ALERTS_IN_UA_TOKEN) {
+      const watcher = new AlertWatcher(db, users, api, {
+        token: config.ALERTS_IN_UA_TOKEN,
+        intervalMs: config.ALERTS_POLL_INTERVAL_MS,
+        timeoutMs: 15_000,
+      });
+      watcher.start();
+      stoppables.push(watcher);
+    } else {
+      logger.info('ALERTS_IN_UA_TOKEN not set — oblast alert start/all-clear disabled');
+    }
+  } else {
+    logger.info('TELEGRAM_BOT_TOKEN not set — bot and notifications disabled');
+  }
+
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
@@ -57,6 +116,7 @@ async function main(): Promise<void> {
 
     await poller.stop();
     await parser.stop();
+    for (const stoppable of stoppables) await stoppable.stop();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     closeDb(db);
 

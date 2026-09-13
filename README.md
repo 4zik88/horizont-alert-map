@@ -3,9 +3,10 @@
 Private air-target tracking for Ukraine. Closed tool for a handful of people — no
 registration, no indexing, map reachable only via a secret token in the URL.
 
-**Steps 1-2 done: ingest + parse.** Polls the public HTML preview of three Telegram
-channels, stores raw messages in SQLite, and extracts structured targets (type,
-direction, settlement with coordinates). No bot and no map yet.
+**Steps 1-3 done: ingest, parse, notify.** Polls the public HTML preview of three
+Telegram channels, extracts structured targets (type, direction, settlement with
+coordinates), and warns a closed list of users by Telegram DM when a target is near
+them or heading their way. No map yet.
 
 ## Sources
 
@@ -193,6 +194,74 @@ Bump `PARSER_VERSION` in `src/parser/worker.ts` and requeue to re-parse the arch
 UPDATE messages SET parse_state = 'pending' WHERE parser_version < 2;
 ```
 
+## The bot (step 3)
+
+Long polling, not webhooks: one Railway service, one replica, so there is no public
+callback to register. Commands are `/start`, `/radius <km>`, `/status`, `/stop`, plus
+sending a location (static or live).
+
+**Access is closed.** `ALLOWED_CHAT_IDS` / `ALLOWED_USERNAMES` in env; anyone else is
+ignored entirely rather than refused, so the bot never confirms its own existence to
+a stranger. An empty allowlist admits *nobody* — defaulting the other way would open
+a private family tool to the internet on a config slip.
+
+Live locations arrive as **edits** to the original message, not as new messages, so
+the bot subscribes to `edited_message`. Without that a live location would be stored
+once and never move again.
+
+```bash
+npm run bot:check   # verifies the token, shows the allowlist and registered users,
+                    # then dry-runs recent targets to show who would be warned
+```
+
+### When someone gets a message
+
+Two independent reasons, from `src/notify/proximity.ts` — pure and heavily tested,
+because this is what makes a phone buzz at 03:00:
+
+1. **In radius** — the target is within the user's own radius (default 40 km).
+2. **Heading towards** — the course points at them and the target can plausibly
+   arrive soon. The lookahead scales with how fast the type actually flies, so a
+   cruise missile warns from much further out than a propeller drone.
+
+False alarms are the real risk: for a group of ten, a bot that cries wolf gets muted
+and is then worse than useless. Three guards, all tunable by env:
+
+| Guard | Default | Why |
+|---|---|---|
+| `NOTIFY_MIN_CONFIDENCE` | 0.6 | a guessed location must never wake anyone |
+| `NOTIFY_MAX_AGE_MS` | 30 min | an hour-old sighting is not actionable |
+| `NOTIFY_COURSE_TOLERANCE_DEG` | 30 | narrow corridor, not a broad sweep |
+| `NOTIFY_LEAD_MINUTES` | 25 | further out and the course will likely change |
+
+Message format is the one the spec asked for:
+`⚠️ БпЛА, курс на Охтирка, ~23 км от вас`
+
+**Anti-spam** works on three levels. The spec's rule — one message per target per
+user per 5 minutes — is enforced by the `notifications` ledger, which survives
+restarts so a redeploy cannot re-alert everyone. Beyond that, a user's matches in one
+pass are **combined into a single message** rather than sent separately (a mass attack
+can match one person against dozens of targets, which the per-target rule does not
+bound), and duplicate reports of the same target from different channels collapse to
+one line, keeping the nearest reading.
+
+Only what is actually delivered is recorded, so a failed send is retried rather than
+silently swallowed by the cooldown.
+
+### Oblast alerts
+
+Separate from target warnings: air-raid start and all-clear for the oblast the user is
+in, polled from alerts.in.ua. The user's oblast is derived from the nearest gazetteer
+settlement, whose oblast tags come from official KATOTTH codes.
+
+Only *transitions* are messaged, and the last state per oblast is persisted — without
+that, every poll after a restart would look like a fresh alert. An oblast seen for the
+first time is recorded silently, so a fresh database does not announce every alert
+currently in progress. A truncated API response is ignored rather than read as "all
+clear everywhere", which would fire a false all-clear to everyone at once.
+
+Without `ALERTS_IN_UA_TOKEN` this part simply does not start.
+
 ## Constraints
 
 - **No air-defence positions, no impacts.** Messages matching the deny-list in
@@ -200,11 +269,12 @@ UPDATE messages SET parse_state = 'pending' WHERE parser_version < 2;
   targets or reach the feed. The raw text is still stored so a false positive is
   recoverable — the flag is advisory and deliberately over-broad.
 - **User coordinates live only in SQLite.** They are never logged: `src/logger.ts`
-  redacts `lat`, `lon` and `chat_id` paths, wired up before any user row exists.
+  redacts `lat`, `lon` and `chat_id` paths. The bot never echoes a location back
+  either — it would then sit in Telegram's history and in any screenshot of the chat —
+  and `bot:check` prints oblast and radius but never coordinates.
 - Message text *is* logged at debug level. It is public channel content, and it is how
   the step-2 parser gets debugged against real traffic.
 
 ## Next
 
-3. Telegram bot: `/start`, location, `/radius`, `/stop`, proximity DMs with anti-spam.
 4. Map: alert polygons, target markers with course arrows, mobile-first PWA.

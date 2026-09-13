@@ -135,6 +135,44 @@ CREATE TABLE toponym_forms (
 ) STRICT, WITHOUT ROWID;
 `,
   },
+  {
+    version: 3,
+    name: 'notifications',
+    sql: `
+-- ─── notifications: the anti-spam ledger ────────────────────────────────────
+-- One row per (user, target) actually delivered. The spec's rule is at most one
+-- message about a given target to a given user per 5 minutes; this is what enforces
+-- it, and it survives restarts so a redeploy cannot re-alert everyone.
+CREATE TABLE notifications (
+  chat_id   INTEGER NOT NULL,
+  target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+  sent_at   INTEGER NOT NULL,
+  PRIMARY KEY (chat_id, target_id)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX ix_notifications_sent_at ON notifications(sent_at);
+
+-- ─── oblast_alerts: air-raid state per oblast ───────────────────────────────
+-- Only transitions are worth a message, so the last known state is persisted;
+-- without it every poll of alerts.in.ua would look like a fresh alert start.
+CREATE TABLE oblast_alerts (
+  oblast     TEXT    PRIMARY KEY,
+  active     INTEGER NOT NULL DEFAULT 0,
+  changed_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+
+-- ─── app_state: small durable key/value ─────────────────────────────────────
+-- Holds the Telegram getUpdates offset and the notifier's target cursor. Both must
+-- outlive a restart: a lost offset replays old commands, and a lost target cursor
+-- re-notifies about targets that have already been sent.
+CREATE TABLE app_state (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];
 
 export function migrate(db: Database, onApplied?: (m: Migration) => void): number {

@@ -35,9 +35,21 @@ export interface Resolution {
  */
 export class Gazetteer {
   private readonly byForm;
+  private readonly nearest;
   private readonly cache = new Map<string, Place[]>();
 
   constructor(db: Db) {
+    // Equirectangular distance is monotonic with true distance at this scale, so
+    // ordering by it picks the same nearest point as haversine without the trig.
+    // The 0.41 factor is cos(50 deg), Ukraine's mid-latitude.
+    this.nearest = db.prepare(`
+      SELECT oblast
+        FROM toponyms
+       WHERE oblast IS NOT NULL
+       ORDER BY ((lat - ?) * (lat - ?)) + (((lon - ?) * (lon - ?)) * 0.41)
+       LIMIT 1
+    `);
+
     this.byForm = db.prepare(`
       SELECT t.id, t.name, t.oblast, t.place, t.population, t.lat, t.lon, t.rank
         FROM toponym_forms f
@@ -102,6 +114,20 @@ export class Gazetteer {
     }
 
     return undefined;
+  }
+
+  /**
+   * Oblast containing a point, via the nearest known settlement.
+   *
+   * Used to decide which region's air-raid alert concerns a user. A polygon lookup
+   * would be exact, but the gazetteer is already in memory and its oblast tags come
+   * from official KATOTTH codes, so the nearest of ~5,700 settlements agrees with the
+   * true region except within a few km of a border — which is close enough for
+   * "should this person hear the Sumy oblast all-clear".
+   */
+  nearestOblast(lat: number, lon: number): string | null {
+    const row = this.nearest.get(lat, lat, lon, lon) as { oblast: string | null } | undefined;
+    return row?.oblast ?? null;
   }
 
   /** Coarse position for a bare oblast mention. */

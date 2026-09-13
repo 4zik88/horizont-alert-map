@@ -40,10 +40,22 @@ const schema = z.object({
   // stays honest, but never required — step 1 runs with zero secrets configured.
   ANTHROPIC_API_KEY: z.string().optional(),
   ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-6'),
-  TELEGRAM_BOT_TOKEN: z.string().optional(),      // step 3
-  ALLOWED_CHAT_IDS: z.string().optional(),        // step 3
-  ALLOWED_USERNAMES: z.string().optional(),       // step 3
-  ALERTS_IN_UA_TOKEN: z.string().optional(),      // step 4
+  // Step 3. Without a bot token the bot and notifier simply do not start; ingest
+  // and parsing continue, so the service stays deployable with no secrets at all.
+  TELEGRAM_BOT_TOKEN: z.string().optional(),
+  ALLOWED_CHAT_IDS: z.string().optional(),
+  ALLOWED_USERNAMES: z.string().optional(),
+  BOT_POLL_TIMEOUT_SECONDS: z.coerce.number().int().min(1).max(60).default(30),
+
+  NOTIFY_INTERVAL_MS: z.coerce.number().int().min(1_000).default(15_000),
+  NOTIFY_COOLDOWN_MS: z.coerce.number().int().min(0).default(300_000),
+  NOTIFY_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.6),
+  NOTIFY_MAX_AGE_MS: z.coerce.number().int().min(60_000).default(1_800_000),
+  NOTIFY_COURSE_TOLERANCE_DEG: z.coerce.number().min(1).max(90).default(30),
+  NOTIFY_LEAD_MINUTES: z.coerce.number().min(1).max(180).default(25),
+
+  ALERTS_IN_UA_TOKEN: z.string().optional(),
+  ALERTS_POLL_INTERVAL_MS: z.coerce.number().int().min(10_000).default(30_000),
   MAP_TOKEN: z.string().optional(),               // step 4
 });
 
@@ -52,6 +64,7 @@ export type Config = z.infer<typeof schema>;
 /** Env vars that must never appear in a log line, a boot banner, or an error. */
 const SECRET_KEYS = [
   'GROQ_API_KEY',
+  'TELEGRAM_BOT_TOKEN',
   'ANTHROPIC_API_KEY',
   'TELEGRAM_BOT_TOKEN',
   'ALERTS_IN_UA_TOKEN',
@@ -82,11 +95,20 @@ export const config: Config = load();
  */
 export function redactedConfig(): Record<string, unknown> {
   const out: Record<string, unknown> = {};
+
   for (const [key, value] of Object.entries(config)) {
-    out[key] = (SECRET_KEYS as readonly string[]).includes(key)
-      ? value === undefined || value === '' ? '[unset]' : '[set]'
-      : value;
+    if ((SECRET_KEYS as readonly string[]).includes(key)) continue;
+    out[key] = value;
   }
+
+  // Listed explicitly: an unset optional is absent from the parsed object entirely,
+  // so iterating it alone would silently omit the secrets rather than report them
+  // as unset — exactly when you most want to see which ones are missing.
+  for (const key of SECRET_KEYS) {
+    const value = config[key];
+    out[key] = value === undefined || value === '' ? '[unset]' : '[set]';
+  }
+
   return out;
 }
 
