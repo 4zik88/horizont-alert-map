@@ -15,7 +15,9 @@ describe('migrations', () => {
 
     assert.equal(version, MIGRATIONS.at(-1)?.version);
     assert.equal(db.pragma('user_version', { simple: true }), version);
-    assert.deepEqual(tableNames(db), ['channel_state', 'messages', 'targets', 'users']);
+    assert.deepEqual(tableNames(db), [
+      'channel_state', 'messages', 'targets', 'toponym_forms', 'toponyms', 'users',
+    ]);
   });
 
   test('is idempotent across repeated boots', () => {
@@ -40,6 +42,7 @@ describe('migrations', () => {
     assert.ok(indexes.includes('ux_messages_channel_post'));
     assert.ok(indexes.includes('ix_messages_parse_queue'));
     assert.ok(indexes.includes('ix_targets_observed_at'));
+    assert.ok(indexes.includes('ix_toponyms_name_norm'));
   });
 
   test('enforces the parse_state check constraint', () => {

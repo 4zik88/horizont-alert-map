@@ -3,6 +3,9 @@ import { closeDb, openDb } from './db/index.js';
 import { Repo } from './db/repo.js';
 import { startServer } from './http/server.js';
 import { logger } from './logger.js';
+import { createExtractor } from './parser/llm.js';
+import { Gazetteer } from './parser/gazetteer.js';
+import { ParseWorker } from './parser/worker.js';
 import { Poller } from './telegram/poller.js';
 
 const SHUTDOWN_GRACE_MS = 5_000;
@@ -31,6 +34,13 @@ async function main(): Promise<void> {
   });
   poller.start();
 
+  const parser = new ParseWorker(db, repo, createExtractor(new Gazetteer(db)), {
+    batchSize: config.PARSE_BATCH_SIZE,
+    intervalMs: config.PARSE_INTERVAL_MS,
+    llmBudgetPerBatch: config.LLM_BUDGET_PER_BATCH,
+  });
+  parser.start();
+
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
@@ -46,6 +56,7 @@ async function main(): Promise<void> {
     hardExit.unref();
 
     await poller.stop();
+    await parser.stop();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     closeDb(db);
 

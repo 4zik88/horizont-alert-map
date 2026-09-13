@@ -101,6 +101,40 @@ CREATE TABLE users (
 ) STRICT;
 `,
   },
+  {
+    version: 2,
+    name: 'toponyms',
+    sql: `
+-- ─── toponyms: the all-Ukraine gazetteer, built by scripts/build-toponyms.ts ──
+CREATE TABLE toponyms (
+  id         INTEGER PRIMARY KEY,
+  osm_id     INTEGER,
+  name       TEXT    NOT NULL,           -- nominative, as OSM spells it
+  name_norm  TEXT    NOT NULL,           -- normalise(name); for exact-name lookups
+  oblast     TEXT,                       -- oblast key, from the KATOTTH/KOATUU prefix
+  place      TEXT    NOT NULL,           -- city | town | village | hamlet
+  population INTEGER NOT NULL DEFAULT 0,
+  lat        REAL    NOT NULL,
+  lon        REAL    NOT NULL,
+  -- Precomputed tie-breaker: 511 gazetteer names are ambiguous nationally and 215
+  -- stay ambiguous even once the oblast is known, so a deterministic ranking is
+  -- required rather than "first row wins".
+  rank       INTEGER NOT NULL DEFAULT 0
+) STRICT;
+
+CREATE INDEX ix_toponyms_name_norm ON toponyms(name_norm);
+CREATE INDEX ix_toponyms_oblast ON toponyms(oblast);
+
+-- ─── toponym_forms: every inflected form -> toponym ─────────────────────────
+-- Channels write settlements in the accusative or genitive ("курсом на Охтирку"),
+-- never the nominative, so lookups happen against generated forms.
+CREATE TABLE toponym_forms (
+  form       TEXT    NOT NULL,
+  toponym_id INTEGER NOT NULL REFERENCES toponyms(id) ON DELETE CASCADE,
+  PRIMARY KEY (form, toponym_id)
+) STRICT, WITHOUT ROWID;
+`,
+  },
 ];
 
 export function migrate(db: Database, onApplied?: (m: Migration) => void): number {

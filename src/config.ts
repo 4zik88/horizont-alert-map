@@ -22,10 +22,15 @@ const schema = z.object({
   MAX_BACKOFF_MS: z.coerce.number().int().min(10_000).default(300_000),
   GAP_FILL_MAX_PAGES: z.coerce.number().int().min(0).max(200).default(25),
 
+  PARSE_BATCH_SIZE: z.coerce.number().int().min(1).max(2000).default(200),
+  PARSE_INTERVAL_MS: z.coerce.number().int().min(1_000).default(10_000),
+  // Hard ceiling on Claude calls per batch so an unusual day cannot run up a bill.
+  LLM_BUDGET_PER_BATCH: z.coerce.number().int().min(0).max(500).default(20),
+
   // Consumed in later steps. Declared here so the shape is known and `.env.example`
   // stays honest, but never required — step 1 runs with zero secrets configured.
   ANTHROPIC_API_KEY: z.string().optional(),       // step 2
-  ANTHROPIC_MODEL: z.string().optional(),         // step 2
+  ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-6'), // step 2
   TELEGRAM_BOT_TOKEN: z.string().optional(),      // step 3
   ALLOWED_CHAT_IDS: z.string().optional(),        // step 3
   ALLOWED_USERNAMES: z.string().optional(),       // step 3

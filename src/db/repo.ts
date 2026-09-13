@@ -13,6 +13,11 @@ export class Repo {
   private readonly updateSuccess;
   private readonly updateFailure;
   private readonly selectAllChannels;
+  private readonly selectPending;
+  private readonly insertTarget;
+  private readonly deleteTargets;
+  private readonly markParsed;
+  private readonly markSensitiveSkipped;
   private readonly db: Db;
 
   constructor(db: Db) {
@@ -65,6 +70,41 @@ export class Repo {
        WHERE channel = @channel
     `);
 
+    // Oldest-first so a backlog is worked in the order the messages arrived.
+    // Sensitive messages are excluded here and closed out by markSensitiveSkipped:
+    // impact and air-defence summaries must never become map targets.
+    this.selectPending = db.prepare(`
+      SELECT id, channel, message_id, text, posted_at
+        FROM messages
+       WHERE parse_state = 'pending' AND is_sensitive = 0 AND text <> ''
+       ORDER BY posted_at
+       LIMIT ?
+    `);
+
+    this.markSensitiveSkipped = db.prepare(`
+      UPDATE messages SET parse_state = 'skipped', parsed_at = @now, parser_version = @version
+       WHERE parse_state = 'pending' AND (is_sensitive = 1 OR text = '')
+    `);
+
+    this.insertTarget = db.prepare(`
+      INSERT INTO targets
+        (message_id, seq, type, raw_type, count, oblast, relation,
+         from_name, from_lat, from_lon, to_name, to_lat, to_lon,
+         course_deg, confidence, source, observed_at, created_at)
+      VALUES
+        (@messageId, @seq, @type, @rawType, @count, @oblast, @relation,
+         @fromName, @fromLat, @fromLon, @toName, @toLat, @toLon,
+         @courseDeg, @confidence, @source, @observedAt, @createdAt)
+    `);
+
+    // Re-parsing an edited message replaces its targets rather than duplicating them.
+    this.deleteTargets = db.prepare(`DELETE FROM targets WHERE message_id = ?`);
+
+    this.markParsed = db.prepare(`
+      UPDATE messages SET parse_state = @state, parsed_at = @now, parser_version = @version
+       WHERE id = @id
+    `);
+
     this.updateFailure = db.prepare(`
       UPDATE channel_state
          SET last_error = @error,
@@ -106,9 +146,62 @@ export class Repo {
     this.updateFailure.run({ channel, error: error.slice(0, 300), now });
   }
 
+  /** Messages waiting to be parsed, oldest first. */
+  pendingMessages(limit: number): PendingMessage[] {
+    return this.selectPending.all(limit) as PendingMessage[];
+  }
+
+  /** Close out messages that must never be parsed (sensitive, or media-only). */
+  skipUnparseable(now: number, version: number): number {
+    return this.markSensitiveSkipped.run({ now, version }).changes;
+  }
+
+  /** Replace a message's targets and record the outcome, atomically. */
+  saveTargets(
+    messageId: number,
+    targets: TargetParams[],
+    state: 'parsed' | 'unparsed' | 'error',
+    now: number,
+    version: number,
+  ): void {
+    this.db.transaction(() => {
+      this.deleteTargets.run(messageId);
+      targets.forEach((target, seq) => this.insertTarget.run({ ...target, seq }));
+      this.markParsed.run({ id: messageId, state, now, version });
+    })();
+  }
+
   transaction<T>(fn: () => T): T {
     return this.db.transaction(fn)();
   }
+}
+
+export interface PendingMessage {
+  id: number;
+  channel: string;
+  message_id: number;
+  text: string;
+  posted_at: number;
+}
+
+export interface TargetParams {
+  messageId: number;
+  type: string;
+  rawType: string | null;
+  count: number;
+  oblast: string | null;
+  relation: string;
+  fromName: string | null;
+  fromLat: number | null;
+  fromLon: number | null;
+  toName: string | null;
+  toLat: number | null;
+  toLon: number | null;
+  courseDeg: number | null;
+  confidence: number;
+  source: string;
+  observedAt: number;
+  createdAt: number;
 }
 
 /** Raw `channel_state` row shape, exactly as SQLite returns it. */

@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.12 <23" },
+  "engines": {
+    "node": ">=22.12 <23"
+  },
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
     "build": "tsc -p tsconfig.json",
@@ -11,9 +13,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "tsx --test test/*.test.ts",
     "backfill": "tsx --env-file-if-exists=.env scripts/backfill.ts",
-    "fixtures:refresh": "tsx scripts/refresh-fixtures.ts"
+    "fixtures:refresh": "tsx scripts/refresh-fixtures.ts",
+    "build:toponyms": "tsx --env-file-if-exists=.env scripts/build-toponyms.ts",
+    "coverage": "tsx --env-file-if-exists=.env scripts/parser-coverage.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.125.0",
     "better-sqlite3": "13.0.3",
     "node-html-parser": "^9.0.4",
     "pino": "^10.3.1",
