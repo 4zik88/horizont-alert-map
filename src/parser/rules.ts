@@ -34,6 +34,13 @@ export interface ParsedTarget {
  */
 const RELATION_CUES: { relation: Relation; source: string }[] = [
   { relation: 'towards', source: 'курс(?:ом)?\\s+на' },
+  /*
+   * "курс Крижопіль" — a destination with the preposition dropped, which these
+   * channels write as often as the full form. Safe next to "курс західний" only
+   * because the place pattern is case-sensitive: the compass word is lowercase and
+   * falls through to the course rules, the settlement is capitalised and does not.
+   */
+  { relation: 'towards', source: 'курс(?:ом)?' },
   { relation: 'towards', source: '[ву]\\s+напрямку(?:\\s+на)?' },
   { relation: 'towards', source: 'напрямком\\s+на' },
   { relation: 'towards', source: '[ву]\\s+б[іi]к' },

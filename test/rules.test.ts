@@ -200,3 +200,26 @@ describe('launch reports', () => {
     assert.ok(targets[0]!.toLat !== null, 'the destination should still be drawn');
   });
 });
+
+describe('"курс" without a preposition', () => {
+  /*
+   * "курс Крижопіль" drops the "на" that the cue used to require, so the destination
+   * was never seen: the target sat on the oblast centre with no heading at all, which
+   * is what a reader notices as "the arrow points the wrong way".
+   */
+  test('reads a bare "курс <place>" as the destination', () => {
+    const { targets } = parse('Реактивний БпЛА на Сумщині, курс Охтирка');
+    assert.equal(targets.length, 1);
+    assert.equal(targets[0]!.toName, 'Охтирка');
+    assert.ok(targets[0]!.courseDeg !== null, 'a bearing should follow from the pair');
+  });
+
+  /*
+   * The same cue must not swallow a compass course. It cannot, because the place
+   * pattern is case-sensitive and the compass word is lowercase — this pins that.
+   */
+  test('still reads "курс західний" as a heading, not a place', () => {
+    const { targets } = parse('Ударні БпЛА на півдні Сумщини, курс західний.');
+    assert.equal(targets[0]!.courseDeg, 270);
+  });
+});
