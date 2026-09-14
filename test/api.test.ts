@@ -41,7 +41,7 @@ function seed(): MapApi {
     // A target in flight: it has a destination.
     { ...base, relation: 'towards', toName: 'Охтирка', toLat: 50.3, toLon: 34.9, fromName: null, fromLat: null, fromLon: null },
     // A launch: an origin and nothing else.
-    { ...base, relation: 'from', toName: null, toLat: null, toLon: null, fromName: 'Гвардійське', fromLat: 45.1, fromLon: 34.0 },
+    { ...base, relation: 'launch', toName: null, toLat: null, toLon: null, fromName: 'Гвардійське', fromLat: 45.1, fromLon: 34.0 },
   ], 'parsed', NOW, 1);
 
   return new MapApi(db, { targetWindowMs: 3_600_000, feedLimit: 50 });

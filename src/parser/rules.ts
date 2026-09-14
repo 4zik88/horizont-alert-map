@@ -6,7 +6,7 @@ import { extractApproachCourse, extractCourse } from './compass.js';
 import { matchWater } from './water.js';
 
 /** How a target relates to the place named. */
-export type Relation = 'towards' | 'past' | 'through' | 'over' | 'from';
+export type Relation = 'towards' | 'past' | 'through' | 'over' | 'from' | 'launch';
 
 export interface ParsedTarget {
   type: TargetType;
@@ -63,7 +63,7 @@ const RELATION_CUES: { relation: Relation; source: string }[] = [
   // "в р-ні Павлограду", "поблизу Ніжина", "північніше Нікополя" — all say where the
   // target currently is rather than where it is going.
   { relation: 'over', source: '[ву]\\s+р[-–—]?н[іi]?\\.?(?:\\s+н\\.?п\\.?)?' },
-  { relation: 'over', source: '[ву]\\s+район[іi]' },
+  { relation: 'over', source: '[ву]\\s+район[іi]?' },
   { relation: 'over', source: 'поблизу|біля|неподалік' },
   // "на межі Одеської та Миколаївської областей" — a position between two regions;
   // the first one names it well enough, and the heading comes from the stated course.
@@ -163,7 +163,7 @@ function relationFor(cue: string, phrase?: string): Relation {
 
 /** Strongest relation wins when a line carries several ("повз X, курсом на Y"). */
 const RELATION_RANK: Record<Relation, number> = {
-  towards: 5, through: 4, past: 3, over: 2, from: 1,
+  towards: 5, through: 4, past: 3, over: 2, from: 1, launch: 0,
 };
 
 const EMOJI = /[\p{Extended_Pictographic}️‍]/gu;
@@ -196,6 +196,32 @@ const CITY_WORD = /^міст[оаиуе]м?$/iu;
  */
 const LAUNCH = /(?<![\p{L}\p{N}])пуск[а-яіїєґ]*/iu;
 
+/*
+ * What makes an untyped line a target report at all.
+ *
+ * When no weapon is named the type is `unknown`, and a bare relation cue is then not
+ * enough evidence: "На Одещині та в напрямку Одеси значні затримки поїздів через
+ * ворожу атаку" is a railway bulletin, and it was putting a "Ціль" marker on central
+ * Odesa. A wrong pin is worse than no pin — the message still reaches the feed as
+ * text either way.
+ *
+ * These channels' untyped reports do carry evidence: a count ("десяток на Батурин"),
+ * a movement verb ("Пролітає Сорокошичі", "Вийшов за межі області"), or a target
+ * noun ("Шах над Рівне", "швидкісна ціль").
+ */
+/** Longest line still readable as the one-line-per-drone shorthand. */
+const SHORTHAND_WORDS = 8;
+
+const UNTYPED_EVIDENCE = new RegExp(
+  BOUNDARY_LEFT +
+    '(?:ціл[ьіяе]|об\'єкт|шах|пролі[тч]|пролет|проходит|пішов|пішла|вийш|' +
+    'рухає|рухают|летить|летять|заходит|заходят|прямує|курс|над|повз|' +
+    'йде|іде|йдут|ідут|підліт|вилет|виліт|виліз|проход|зайшов|зайшла|' +
+    // Counts written as words: "десяток на Батурин", "група на Ніжин".
+    'десят|кільк|декілька|груп|пара|багато)',
+  'iu',
+);
+
 /**
  * A target known only by where it started.
  *
@@ -207,13 +233,14 @@ function originOnly(
   type: TargetType,
   rest: string,
   cleaned: string,
+  isLaunch: boolean,
 ): ParsedTarget[] {
   return [{
     type,
     rawType: rawTypeOf(rest),
     count: extractCount(rest),
     oblast: place.oblast,
-    relation: 'from',
+    relation: isLaunch ? 'launch' : 'from',
     toName: null,
     toLat: null,
     toLon: null,
@@ -287,7 +314,7 @@ function bareMention(
 
     // "Пуски шахедів з району Донецьку, Орла та Гвардійського" reaches here with no
     // cue at all; the names are launch sites and must not become positions.
-    if (LAUNCH.test(rest)) return originOnly(place, type, rest, cleaned);
+    if (LAUNCH.test(rest)) return originOnly(place, type, rest, cleaned, true);
 
     return [{
       type,
@@ -353,6 +380,24 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
     }
   }
   if (type !== 'unknown' && !inferred) context.type = type;
+
+  /*
+   * No weapon named. Two shapes are still target reports and one is not.
+   *
+   * @sectorv666 tracks a drone wave one line per drone — "На Обухів", "Димер на
+   * Вишгород", "Цей на Славутич" — with the type stated once and then dropped. Those
+   * lines are almost nothing but a cue and a place, and there are hundreds of them.
+   *
+   * A long sentence that merely happens to contain a direction is something else:
+   * "На Одещині та в напрямку Одеси значні затримки поїздів через ворожу атаку" is a
+   * railway bulletin, and it was putting a marker on central Odesa. Length is the
+   * discriminator that separates the two without a topic blacklist.
+   */
+  const words = rest.split(/\s+/).length;
+  if (type === 'unknown' && !inferred && words > SHORTHAND_WORDS
+      && !UNTYPED_EVIDENCE.test(rest) && extractCount(rest) < 2) {
+    return [];
+  }
 
   /*
    * `tail` is everything after the cue, kept alongside the capitalised phrase because
@@ -435,10 +480,17 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
 
   hits.sort((a, b) => RELATION_RANK[b.relation] - RELATION_RANK[a.relation]);
 
-  // Nothing in the line points forward: every place named is somewhere the target
-  // came from, so there is no destination to put a marker on.
+  /*
+   * Nothing in the line points forward: every place named is somewhere the target
+   * came from, so there is no destination to put a marker on.
+   *
+   * Only an actual launch report earns the launch marker. "шахед залітає з Одещини"
+   * is a transit, not a launch — drawing a launch burst over Odesa claimed a thing
+   * that cannot happen there. Both cases still yield an origin with no position, so
+   * neither is drawn as a target; only the launch is drawn at all.
+   */
   if (hits[0]!.relation === 'from' || (LAUNCH.test(rest) && hits[0]!.relation !== 'towards')) {
-    return originOnly(hits[0]!.place, type, rest, cleaned);
+    return originOnly(hits[0]!.place, type, rest, cleaned, LAUNCH.test(rest));
   }
 
   const destination = hits[0]!;

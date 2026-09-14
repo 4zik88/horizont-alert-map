@@ -131,9 +131,10 @@ export class MapApi {
     `);
 
     /*
-     * Launch reports: an origin and no destination. The `to_lat IS NULL` is what
-     * distinguishes them — the parser records a launch that way precisely so it
-     * cannot be drawn as a position.
+     * Launch reports only. A plain `from` also has an origin and no destination —
+     * "шахед залітає з Одещини" is a transit whose position is unknown — and drawing
+     * that as a launch claimed a launch from Ukrainian-held Odesa. The parser marks
+     * a genuine launch with its own relation; nothing else is drawn here.
      */
     this.selectLaunches = db.prepare(`
       SELECT t.id, t.type, t.count, t.from_name, t.from_lat, t.from_lon,
@@ -143,7 +144,7 @@ export class MapApi {
        WHERE t.observed_at >= ?
          AND t.to_lat IS NULL
          AND t.from_lat IS NOT NULL
-         AND t.relation = 'from'
+         AND t.relation = 'launch'
          AND m.is_sensitive = 0
        ORDER BY t.observed_at DESC
        LIMIT 200

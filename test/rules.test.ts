@@ -178,7 +178,7 @@ describe('launch reports', () => {
   test('records the launch site as an origin, with no position to draw', () => {
     const { targets } = parse('Пуски шахедів з Гвардійського.');
     assert.equal(targets.length, 1);
-    assert.equal(targets[0]!.relation, 'from');
+    assert.equal(targets[0]!.relation, 'launch');
     assert.equal(targets[0]!.toLat, null);
     assert.equal(targets[0]!.toName, null);
     assert.ok(targets[0]!.fromLat !== null, 'the origin should still be known');
@@ -221,5 +221,50 @@ describe('"курс" without a preposition', () => {
   test('still reads "курс західний" as a heading, not a place', () => {
     const { targets } = parse('Ударні БпЛА на півдні Сумщини, курс західний.');
     assert.equal(targets[0]!.courseDeg, 270);
+  });
+});
+
+describe('messages that are not target reports', () => {
+  /*
+   * These put markers on central Odesa. A wrong pin is worse than no pin — the text
+   * still reaches the feed either way, which is the specified behaviour.
+   */
+  test('a railway bulletin naming a city is not a target', () => {
+    const { targets } = parse(
+      'На Одещині та в напрямку Одеси значні затримки поїздів через ворожу атаку яка триває',
+    );
+    assert.deepEqual(targets, []);
+  });
+
+  test('a warning about future strikes is not a target', () => {
+    const { targets } = parse('ворог готує нові удари по АЗС та ТРЦ у Києві');
+    assert.deepEqual(targets, []);
+  });
+
+  /*
+   * The shorthand must survive: @sectorv666 tracks a wave one line per drone with the
+   * type stated once and then dropped, and those lines are nothing but a cue and a
+   * place. Length is what separates them from the bulletins above.
+   */
+  test('keeps the one-line-per-drone shorthand', () => {
+    assert.equal(parse('На Охтирку').targets.length, 1);
+    assert.equal(parse('Цей на Охтирку').targets.length, 1);
+  });
+});
+
+describe('a transit is not a launch', () => {
+  /*
+   * "шахед залітає з Одещини" is a drone passing through, not a launch. Drawing it as
+   * one claimed a launch from Ukrainian-held Odesa.
+   */
+  test('an origin without a launch word is not marked as a launch', () => {
+    const { targets } = parse('шахед залітає з Сумщини');
+    assert.equal(targets.length, 1);
+    assert.equal(targets[0]!.relation, 'from');
+  });
+
+  test('a stated launch is', () => {
+    const { targets } = parse('Пуски шахедів з Гвардійського');
+    assert.equal(targets[0]!.relation, 'launch');
   });
 });

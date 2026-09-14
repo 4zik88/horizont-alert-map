@@ -36,13 +36,29 @@ const REDRAW_MS = 15000;        // re-age markers without refetching
 const TYPES = {
   uav: {
     color: '#e3b341', label: 'БпЛА', short: 'БпЛА',
-    // Delta wing — the Shahed planform.
-    path: 'M12 1 L21 21 L12 16.5 L3 21 Z',
+    /*
+     * Shahed-136 from above: swept delta, a narrow fuselage running past the
+     * trailing edge, the pusher propeller across the tail, and the winglets that
+     * make the airframe recognisable. A plain triangle read as an arrowhead — a
+     * direction indicator rather than the thing that is flying.
+     */
+    path:
+      'M12 2 L20.6 17.6 L3.4 17.6 Z' +
+      'M19.4 15.6 L22.3 20.4 L18.6 18.6 Z' +
+      'M4.6 15.6 L1.7 20.4 L5.4 18.6 Z' +
+      'M10.9 5.4 L13.1 5.4 L13.1 20.4 L10.9 20.4 Z' +
+      'M8.4 20 L15.6 20 L15.6 21.3 L8.4 21.3 Z',
   },
   jet_uav: {
     color: '#f0883e', label: 'Реактивний БпЛА', short: 'Реакт. БпЛА',
-    // Sharper sweep plus a tail fin, to read as the faster jet-powered variant.
-    path: 'M12 1 L20 19 L13 15.5 L13 22 L11 22 L11 15.5 L4 19 Z',
+    // The same airframe, sharper: a narrower wing and a jet nozzle instead of the
+    // propeller, so the faster variant is distinguishable at a glance.
+    path:
+      'M12 1.6 L18.8 17.4 L5.2 17.4 Z' +
+      'M17.8 15.4 L20.6 20.2 L17 18.4 Z' +
+      'M6.2 15.4 L3.4 20.2 L7 18.4 Z' +
+      'M10.7 4.6 L13.3 4.6 L13.3 20.6 L10.7 20.6 Z' +
+      'M10.2 20.6 L13.8 20.6 L13.1 22.6 L10.9 22.6 Z',
   },
   cruise: {
     color: '#f85149', label: 'Крилата ракета', short: 'Ракета',

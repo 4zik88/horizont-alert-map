@@ -24,7 +24,9 @@ const RULES: { type: TargetType; re: RegExp }[] = [
   // "Швидкісна ціль" and a bare "ракети" are announced without naming the weapon.
   // They are missile-class, so cruise speed is the right assumption for ETA — a
   // genuinely ballistic launch is always called "балістика" and is matched above.
-  { type: 'cruise', re: stem('крилат|калібр|х-101|х-555|х-59|х-31|іскандер-к|бандероль|дань-т|швидкісн[а-яіїєґ]*\\s+ціль|ракет') },
+  // Stems, not full words: the channels write "бандеролей", "реактиви", "Швидкісна"
+  // on its own. `бандероль` and `швидкісна ціль` matched none of those.
+  { type: 'cruise', re: stem('крилат|калібр|х-101|х-555|х-59|х-31|іскандер-к|бандерол|дань-т|швидкісн|ракет') },
   /*
    * Guided bombs, including the long form "керованих авіаційних бомб". This must
    * match *before* `aviation`: a message like "Пуски керованих авіаційних бомб
@@ -42,7 +44,7 @@ const RULES: { type: TargetType; re: RegExp }[] = [
     ),
   },
   { type: 'recon', re: stem('розвід') },
-  { type: 'jet_uav', re: stem('реактивн') },
+  { type: 'jet_uav', re: stem('реактив|рбпла') },
   { type: 'uav', re: stem('бпла|безпілотник|шахед|герань|shahed|geran|мопед') },
   { type: 'aviation', re: stem('тактичн[а-яіїєґ]*\\s+авіаці|авіаці|літак|борт[а-яіїєґ]*|міг-\\d+|ту-\\d+|су-\\d+') },
 ];
