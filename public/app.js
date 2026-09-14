@@ -672,7 +672,12 @@ function drawLaunches() {
 
   const now = Date.now();
 
-  for (const l of state.launches) {
+  /*
+   * Same collapse as targets. Several channels report one launch, and the same site
+   * launches repeatedly through a night, so Прим.-Ахтарськ arrived as a stack of
+   * identical bursts on one point.
+   */
+  for (const l of dedupeTargets(state.launches)) {
     const spec = TYPES[l.type] || TYPES.unknown;
     const opacity = ageOpacity(l.at, now, LAUNCH_FADE_MS);
 
@@ -687,8 +692,9 @@ function drawLaunches() {
     marker.bindPopup(
       `<strong>Пуск: ${spec.label}${l.count > 1 ? ' ×' + l.count : ''}</strong><br>` +
       (l.label ? escapeHtml(l.label) + '<br>' : '') +
-      `<span class="muted">${minutesAgo(l.at, now)} тому</span><br>` +
-      '<span class="muted">місце пуску, не поточна позиція</span>',
+      `<span class="muted">${minutesAgo(l.at, now)} тому</span>` +
+      (l.reports > 1 ? `<span class="muted"> · ${l.reports} пусків</span>` : '') +
+      '<br><span class="muted">місце пуску, не поточна позиція</span>',
     );
 
     marker.addTo(launchLayer);
