@@ -327,20 +327,29 @@ body[data-zoom="region"] .launch em { display: none; }
 .cluster-wrap { background: none; border: none; }
 
 .tgt-cluster {
+  position: relative;
   display: grid;
   place-items: center;
   width: var(--s);
   height: var(--s);
   border-radius: 50%;
-  background: rgba(13, 17, 23, 0.9);
+  background: rgba(13, 17, 23, 0.92);
+  /* Double ring: a cluster must not be mistakable for the ×N badge on a marker. */
   border: 2px solid var(--c);
+  outline: 1px solid var(--c);
+  outline-offset: 2px;
   color: var(--c);
-  font-size: 12px;
-  font-weight: 700;
   font-variant-numeric: tabular-nums;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
   cursor: pointer;
 }
+
+.tgt-cluster b {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 
 /* The heading chevron, pinned outside the ring and rotated to the group's mean. */
 .tgt-cluster i {

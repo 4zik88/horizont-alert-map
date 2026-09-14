@@ -5,14 +5,15 @@
  *
  * Live data is never cached: a stale target map would be worse than an empty one.
  */
-const CACHE = 'horizont-v21';
+const CACHE = 'horizont-v24';
 const SHELL = [
   '/',
   '/style.css',
   '/app.js',
   '/vendor/leaflet.js',
   '/vendor/leaflet.css',
-  '/manifest.webmanifest',
+  // Not the manifest: it is generated per request and carries the map token, so a
+  // cached copy would outlive a token change and strand the installed app.
   '/icons/icon-192.png',
   '/icons/icon.svg',
 ];

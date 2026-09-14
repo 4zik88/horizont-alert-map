@@ -103,6 +103,40 @@ async function handle(
     return;
   }
 
+  /*
+   * The manifest is generated so `start_url` carries the token.
+   *
+   * A static `start_url: "/"` made the installed app unopenable: iOS gives a
+   * standalone web app its own cookie jar, so "Add to Home Screen" launched a context
+   * that had never seen the token and got the same flat 404 a stranger gets. The same
+   * happened to anyone who bookmarked the clean URL after the redirect. The app now
+   * re-authenticates itself on every launch.
+   */
+  if (path === '/manifest.webmanifest') {
+    res.writeHead(200, {
+      'content-type': MIME['.webmanifest']!,
+      'cache-control': 'private, no-cache',
+      'x-robots-tag': 'noindex, nofollow',
+    });
+    res.end(JSON.stringify({
+      name: 'Horizont',
+      short_name: 'Horizont',
+      description: 'Карта повітряних цілей',
+      start_url: `/t/${process.env['MAP_TOKEN'] ?? ''}`,
+      scope: '/',
+      display: 'standalone',
+      orientation: 'portrait-primary',
+      background_color: '#0d1117',
+      theme_color: '#0d1117',
+      icons: [
+        { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+        { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+        { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+      ],
+    }));
+    return;
+  }
+
   if (path === '/api/state') {
     if (!api) return notFound(res);
     // Short cache: the page polls, and a stale second is harmless.

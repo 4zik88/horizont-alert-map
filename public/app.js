@@ -103,7 +103,9 @@ const TYPES = {
 const LAUNCH_COLOR = '#ff9bd2';
 
 function launchIcon(spec, count) {
-  const badge = count > 1 ? `<s>${count}</s>` : '';
+  // "×4" rather than "4": on a map that also shows cluster rings, a bare number was
+  // ambiguous between "four aircraft" and "four contacts".
+  const badge = count > 1 ? `<s>×${count}</s>` : '';
 
   return L.divIcon({
     className: 'tgt',
@@ -152,7 +154,9 @@ function targetIcon(spec, course, count, relation, rel) {
       ' stroke-dasharray="2.6 2.6" opacity="0.75"/>'
     : '';
 
-  const badge = count > 1 ? `<s>${count}</s>` : '';
+  // "×4" rather than "4": on a map that also shows cluster rings, a bare number was
+  // ambiguous between "four aircraft" and "four contacts merged".
+  const badge = count > 1 ? `<s>×${count}</s>` : '';
   /*
    * A destination is drawn hollow and prefixed with an arrow: the shape still says
    * what kind of thing is coming, the outline says it has not arrived. A filled
@@ -299,18 +303,18 @@ const escapeHtml = (s) => s.replace(/[&<>"]/g, (c) =>
  */
 const ALERT_RED = '#f85149';
 /*
- * A wash, not a flood. At 0.20 the fill covered half the country during a raid and
- * the targets — the thing you actually look for — disappeared into it. With the fill
- * this faint the edge has to carry the shape, so the stroke gets heavier as the fill
- * gets lighter.
+ * A wash, not a flood — but still a wash. 0.20 drowned the targets; 0.06, tried
+ * first, left "тільки контури" and the alert stopped reading as an area at all. 0.16
+ * is the middle that keeps the shaded region obvious while the markers stay on top of
+ * it. The heavier stroke stays: the edge does the work of saying *which* raion.
  *
  * The quiet-oblast outline stays, because the dark basemap gives little else to
  * navigate by, but demoted hard: 24 grey polygons were competing with the alert
  * edges before a single alert existed.
  */
 const PAINT = {
-  full:    { color: ALERT_RED, fill: ALERT_RED, fillOpacity: 0.06, weight: 1.6, opacity: 0.8 },
-  partial: { color: ALERT_RED, fill: ALERT_RED, fillOpacity: 0.05, weight: 1.5, opacity: 0.75 },
+  full:    { color: ALERT_RED, fill: ALERT_RED, fillOpacity: 0.16, weight: 1.6, opacity: 0.85 },
+  partial: { color: ALERT_RED, fill: ALERT_RED, fillOpacity: 0.14, weight: 1.5, opacity: 0.8 },
   none:    { color: '#30363d', fill: ALERT_RED, fillOpacity: 0,    weight: 0.5, opacity: 0.10 },
 };
 
@@ -772,11 +776,15 @@ function clusterIcon(members) {
     THREAT_ORDER.indexOf(b.type) < THREAT_ORDER.indexOf(a.type) ? b : a);
   const spec = TYPES[worst.type] || TYPES.unknown;
   const count = members.reduce((n, t) => n + t.count, 0);
-  const size = count >= 10 ? 40 : count >= 5 ? 34 : 28;
+  const size = count >= 10 ? 40 : count >= 5 ? 34 : 30;
 
   /*
-   * Always a number, never a bare dot: shape carries the type distinction on this map,
-   * so a cluster that shows neither shape nor count says nothing at all.
+   * The number is the count of aircraft, not of merged contacts.
+   *
+   * It first showed contacts, and "4" left the reader unable to tell whether four
+   * things were flying or four reports had been merged — "ніде не видно що 4 штуки
+   * летить". How many are in the air is the question; the breakdown into contacts
+   * belongs in the popup, where there is room to say it in words.
    *
    * The chevron restores the one thing clustering destroys — whether the blob is
    * coming your way — and is drawn only when the members actually agree on a heading.
@@ -792,7 +800,8 @@ function clusterIcon(members) {
 
   return L.divIcon({
     className: 'cluster-wrap',
-    html: `<span class="tgt-cluster" style="--c:${spec.color};--s:${size}px">${count}${chevron}</span>`,
+    html: `<span class="tgt-cluster" style="--c:${spec.color};--s:${size}px">` +
+      `<b>${count}</b>${chevron}</span>`,
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
   });
@@ -855,6 +864,7 @@ function drawCluster(members, now) {
   const lon = members.reduce((n, t) => n + t.head.lon, 0) / members.length;
   const newest = Math.max(...members.map((t) => t.head.at));
 
+  const aircraft = members.reduce((n, t) => n + t.count, 0);
   const counts = new Map();
   for (const t of members) {
     const spec = TYPES[t.type] || TYPES.unknown;
@@ -870,7 +880,8 @@ function drawCluster(members, now) {
     zIndexOffset: 300,
   })
     .bindPopup(
-      `<strong>${members.length} цілей</strong><br>${escapeHtml(breakdown)}<br>` +
+      `<strong>${aircraft} цілей</strong><br>${escapeHtml(breakdown)}<br>` +
+      `<span class="muted">${members.length} окремих відміток</span><br>` +
       `<span class="muted">найсвіжіша ${minutesAgo(newest, now)} тому</span>` +
       (near !== null ? `<br><span class="muted">~${near} км від вас</span>` : ''),
     )
