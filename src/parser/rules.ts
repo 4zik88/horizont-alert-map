@@ -1,4 +1,5 @@
 import type { Gazetteer, Resolution } from './gazetteer.js';
+import { normalise } from './morphology.js';
 import { matchOblast } from './oblasts.js';
 import { BOUNDARY_LEFT } from './regex.js';
 import { classifyType, extractCount, inferBareType, type TargetType } from './targetTypes.js';
@@ -106,7 +107,8 @@ const CUE_RE = new RegExp(
  * Without it the capitalised name is never reached and the cue is discarded.
  */
 const PLACE_FILLER =
-  '(?:(?:центр[ауі]?|окол[иі]ц[іь]|район[уаі]?|р-?н[уаі]?)\\s+|(?:н\\.?\\s?п\\.?|м\\.|с\\.|смт)\\s*)?';
+  '(?:(?:центр[ауі]?|окол[иі]ц[іь]|район[уаі]?|р-?н[уаі]?|сел[оаі]|міст[оаеі]|смт)\\s+' +
+  '|(?:н\\.?\\s?п\\.?|м\\.|с\\.|смт)\\s*)?';
 const CAP_WORD = '[А-ЯІЇЄҐA-Z][^\\s,.;:!?()]*';
 /** `u` but deliberately NOT `i` — the capitalisation is the signal. */
 const PLACE_RE = new RegExp(
@@ -170,6 +172,8 @@ const RELATION_RANK: Record<Relation, number> = {
 
 const EMOJI = /[\p{Extended_Pictographic}️‍]/gu;
 const HEADING = /^\s*([А-ЯІЇЄҐ][А-Яа-яІіЇїЄєҐґ'’-]{3,20})\s*[:\-–—]\s*/u;
+/** The same, with the separator left out — and something after it, or it is not a heading. */
+const BARE_OBLAST_PREFIX = /^\s*([А-ЯІЇЄҐ][А-Яа-яІіЇїЄєҐґ'’-]{3,20})\s+(?=\S)/u;
 
 export interface ParseContext {
   gazetteer: Gazetteer;
@@ -195,6 +199,12 @@ export interface ParseContext {
    * tracks a target in flight must not turn the second into a launch too.
    */
   launch: boolean;
+}
+
+/** Is the line nothing but this place name, give or take punctuation? */
+function isBareName(line: string, name: string): boolean {
+  const strip = (v: string) => normalise(v).replace(/[^\p{L}\p{N}]+/gu, '');
+  return strip(line) === strip(name);
 }
 
 /** "над містом", "в напрямку міста" — refers back to the header city. */
@@ -369,15 +379,46 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
     }
   }
 
+  /*
+   * The same heading without punctuation: "Одещина реактивний на село Красне".
+   *
+   * Half these channels drop the colon, and the oblast is the only thing that
+   * disambiguates a name. Six villages are called Красне; without the context the
+   * ranking picks the largest, which put an Odesa-oblast target 500 km away in Lviv
+   * oblast. This is the disambiguator the whole gazetteer depends on, so it cannot
+   * hinge on a punctuation mark the writer may or may not type.
+   */
+  if (!heading) {
+    const first = BARE_OBLAST_PREFIX.exec(rest);
+    const bareOblast = first ? matchOblast(first[1]!) : undefined;
+    if (first && bareOblast) {
+      context.oblast = bareOblast.key;
+      rest = rest.slice(first[0].length).trim();
+    }
+  }
+
   // A line that is only a heading carries no target.
   if (!rest) return [];
 
   // A short line that is just a settlement name is a header ("⚠ Дніпро"), not a
   // report; remember it so a later "над містом" has something to point at.
-  if (!CUE_RE.test(rest)) {
+  /*
+   * A line naming a weapon is a report, never a header — "Дачне шахед" says a Shahed
+   * is over Dachne. Without this guard `resolve` finds the settlement, the line is
+   * filed as a header and the target disappears. It only surfaced once the oblast
+   * prefix started being stripped: "Одещина Дачне шахед" used to resolve to the
+   * oblast first, which is not a settlement, so it fell through by luck.
+   */
+  if (!CUE_RE.test(rest) && classifyType(rest, 'unknown') === 'unknown') {
     CUE_RE.lastIndex = 0;
     const asPlace = rest.length <= 30 ? context.gazetteer.resolve(rest, context.oblast) : undefined;
-    if (asPlace?.kind === 'settlement') {
+    /*
+     * And the line must be *only* the name. "Волинь Луцьк уважно" is a warning about
+     * Lutsk under a message about drones; swallowing it as a header dropped the one
+     * place the writer wanted people to look at. "⚠ Дніпро" on its own line is the
+     * real thing this is for.
+     */
+    if (asPlace?.kind === 'settlement' && isBareName(rest, asPlace.name)) {
       context.city = asPlace;
       if (asPlace.oblast) context.oblast = asPlace.oblast;
       return [];

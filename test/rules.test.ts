@@ -313,3 +313,44 @@ describe('enemy launch sites', () => {
     assert.equal(targets[0]!.courseDeg, 270);
   });
 });
+
+describe('oblast heading without punctuation', () => {
+  /*
+   * Half these channels drop the colon, and the oblast is the only thing that
+   * disambiguates a name. Six villages are called Красне; without the context the
+   * ranking picks the largest and an Odesa-oblast target landed 500 km away in Lviv
+   * oblast.
+   */
+  test('a bare oblast prefix still sets the context', () => {
+    const { targets } = parse('Сумщина реактивний на Михайлівку');
+    assert.equal(targets.length, 1);
+    assert.equal(targets[0]!.oblast, 'sumska');
+    // The Sumy Mykhailivka, not the Zaporizhzhia one of the same name.
+    assert.equal(targets[0]!.toLat, 50.9);
+  });
+
+  test('the colon form still works', () => {
+    const { targets } = parse('Сумщина: реактивний на Михайлівку');
+    assert.equal(targets[0]!.toLat, 50.9);
+  });
+
+  /*
+   * A line naming a weapon is a report, not a header. This only surfaced once the
+   * prefix was stripped: "Одещина Дачне шахед" used to resolve to the oblast first,
+   * which is not a settlement, so it fell through by luck.
+   */
+  test('"<place> <weapon>" is a target, not a city header', () => {
+    const { targets } = parse('Сумщина Охтирка шахед');
+    assert.equal(targets.length, 1);
+    assert.equal(targets[0]!.toName, 'Охтирка');
+  });
+
+  /*
+   * And a header has to be only the name — "Волинь Луцьк уважно" is a warning about
+   * Lutsk, and swallowing it dropped the one place the writer wanted looked at.
+   */
+  test('a place with anything after it is not a header', () => {
+    const { targets } = parse('БпЛА\nСумщина Охтирка уважно');
+    assert.ok(targets.some((t) => t.toName === 'Охтирка'));
+  });
+});
