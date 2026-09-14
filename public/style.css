@@ -396,3 +396,29 @@ body.no-me .sep { display: none; }
 
 .unit { font-size: 12px; margin-left: 3px; }
 .sep { margin: 0 4px; }
+
+/*
+ * Shown only when a script fails to load — a lapsed session used to render as a
+ * black screen with nothing on it, which is indistinguishable from a broken app.
+ *
+ * The `[hidden]` rule is not redundant. `display: flex` below is an author style and
+ * beats the browser's own `[hidden] { display: none }`, so without this the panel
+ * covered the working map on every single load — the very failure it reports.
+ */
+.boot[hidden] { display: none; }
+
+.boot {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  line-height: 1.6;
+  padding: 24px;
+  background: var(--bg, #0d1117);
+  color: var(--fg, #e6edf3);
+  font: 15px/1.6 system-ui, -apple-system, sans-serif;
+}

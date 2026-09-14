@@ -24,6 +24,8 @@ seedGazetteer(db, [
   { name: 'Михайлівка', oblast: 'zaporizka', place: 'town', population: 8000, lat: 47.27, lon: 35.23 },
   // A launch site, for the launch-report cases below.
   { name: 'Гвардійське', oblast: 'krym', place: 'town', population: 12000, lat: 45.12, lon: 34.02 },
+  // A big Ukrainian city, so "пуск ... по Харкову" has something to wrongly land on.
+  { name: 'Харків', oblast: 'kharkivska', place: 'city', population: 1400000, lat: 49.99, lon: 36.23 },
 ]);
 const gaz = new Gazetteer(db);
 const parse = (text: string) => parseMessage(text, gaz);
@@ -187,6 +189,59 @@ describe('launch reports', () => {
   test('does not invent a course for a launch', () => {
     const { targets } = parse('пуски шахедів з Гвардійського');
     assert.equal(targets[0]!.courseDeg, null);
+  });
+
+  /*
+   * A launch marker is only ever an enemy origin.
+   *
+   * The map drew "Пуск · КАБ" on Kharkiv: the line said "пуск", Kharkiv was the only
+   * place in it, and the marker landed on a Ukrainian city. A KAB is released from a
+   * jet already airborne, so "пуск КАБ по Харкову" describes a strike on Kharkiv —
+   * precisely the thing this tool must never display.
+   *
+   * Two rules together: only a drone or a missile has a launch site, and the site must
+   * be ground Ukraine does not hold.
+   */
+  test('a KAB is never a launch, wherever it is reported', () => {
+    const { targets } = parse('Пуск КАБ по Харкову');
+    assert.ok(
+      targets.every((t) => t.relation !== 'launch'),
+      'a KAB has no launch site — it is dropped from an aircraft',
+    );
+  });
+
+  test('a launch is never drawn on ground Ukraine holds', () => {
+    for (const line of ['Пуск КАБ по Харкову', 'пуски по Сумщині', 'пуск з Полтави']) {
+      const { targets } = parse(line);
+      for (const t of targets) {
+        assert.notEqual(t.relation, 'launch', `${line} must not yield a launch marker`);
+      }
+    }
+  });
+
+  test('occupied territory is the exception, and still launches', () => {
+    const { targets } = parse('Пуски шахедів з Гвардійського.');
+    assert.equal(targets[0]!.relation, 'launch');
+  });
+
+  /*
+   * Open water is nobody's territory, and a ship-launched cruise missile is the
+   * earliest warning the south coast gets.
+   */
+  test('the seas stay launch origins', () => {
+    const { targets } = parse('Пуски крилатих ракет з акваторії Чорного моря');
+    assert.equal(targets[0]!.relation, 'launch');
+    assert.equal(targets[0]!.fromName, 'Чорне море');
+  });
+
+  /*
+   * Demoted, not discarded: the origin is still recorded, it simply draws nothing, and
+   * the message still reaches the feed as text.
+   */
+  test('a rejected launch still yields an origin with no position', () => {
+    const { targets } = parse('Пуск КАБ по Харкову');
+    assert.ok(targets.length > 0, 'the line should still parse');
+    assert.equal(targets[0]!.toLat, null, 'and must never become a position');
   });
 
   /*

@@ -5,10 +5,18 @@ import { config } from '../config.js';
 /**
  * Access control for the map.
  *
- * The map is reachable only by a secret link. The token arrives once in the URL
- * path, is exchanged for an httpOnly cookie, and the browser is redirected to a
- * clean URL — because a token left in the query string leaks through the `Referer`
- * header to every tile server the page talks to, and into Railway's access logs.
+ * The map is reachable only by a secret link. `/t/<token>` both serves the page and
+ * sets an httpOnly cookie, which is what the page's own requests — assets, state,
+ * manifest — then travel with. The token never leaves in a `Referer`: every response
+ * carries `referrer-policy: strict-origin`, and the page repeats it in a meta tag, so
+ * tile servers see the origin and nothing else.
+ *
+ * It used to redirect to a clean `/` instead of serving the page, which made the
+ * cookie the *only* way back in. That is a single point of failure on a phone, and it
+ * failed: iOS gives a home-screen app its own cookie jar, Telegram's in-app browser
+ * another, and Safari purges site data for a site left alone long enough. Each of
+ * those turned the map into a flat 404 with nothing on screen to explain it. The link
+ * now works on its own, in any jar, however old.
  *
  * A wrong or missing token gets **404, never 403**: a 403 confirms that a valid
  * token exists to be guessed.
@@ -51,21 +59,23 @@ export function isValidToken(candidate: string): boolean {
   return token !== undefined && token.length > 0 && safeEqual(candidate, token);
 }
 
-/** Exchange a valid token for a cookie and redirect to a URL that no longer has it. */
-export function grantSession(res: ServerResponse, redirectTo: string): void {
+/**
+ * Attach the session cookie to a response that has not been written yet.
+ *
+ * Sets the header rather than sending anything, so the caller can go on to serve the
+ * page in the same response: `writeHead` merges what is already set, and `set-cookie`
+ * survives that merge. One round trip instead of two, and the page and its permission
+ * to load arrive together.
+ */
+export function setSessionCookie(res: ServerResponse): void {
   const token = config.MAP_TOKEN!;
   const secure = config.NODE_ENV === 'production' ? '; Secure' : '';
 
-  res.writeHead(302, {
-    location: redirectTo,
-    'set-cookie':
-      `${COOKIE_NAME}=${cookieValue(token)}; Path=/; Max-Age=${COOKIE_MAX_AGE_DAYS * 86400}` +
+  res.setHeader(
+    'set-cookie',
+    `${COOKIE_NAME}=${cookieValue(token)}; Path=/; Max-Age=${COOKIE_MAX_AGE_DAYS * 86400}` +
       `; HttpOnly; SameSite=Lax${secure}`,
-    // Belt and braces: the redirect itself must never be cached or indexed.
-    'cache-control': 'no-store',
-    'x-robots-tag': 'noindex, nofollow, noarchive',
-  });
-  res.end();
+  );
 }
 
 /** Suggest a token for first-time setup. Never logged, only printed on request. */

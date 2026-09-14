@@ -5,7 +5,7 @@ import { BOUNDARY_LEFT } from './regex.js';
 import { classifyType, extractCount, inferBareType, type TargetType } from './targetTypes.js';
 import { extractApproachCourse, extractCourse } from './compass.js';
 import { matchWater } from './water.js';
-import { findLaunchSites, matchLaunchSite } from './launchSites.js';
+import { findLaunchSites, isKnownLaunchSite, matchLaunchSite } from './launchSites.js';
 
 /** How a target relates to the place named. */
 export type Relation = 'towards' | 'past' | 'through' | 'over' | 'from' | 'launch';
@@ -221,6 +221,40 @@ const CITY_WORD = /^міст[оаиуе]м?$/iu;
  */
 const LAUNCH = /(?<![\p{L}\p{N}])пуск[а-яіїєґ]*/iu;
 
+/**
+ * What can be launched *from a site*, as opposed to dropped from an aircraft already
+ * airborne.
+ *
+ * A KAB has no launch site: it is released by a jet over the front, so "пуск КАБ по
+ * Харкову" describes a strike on Kharkiv, not an origin — and the map drew it as a
+ * launch burst on the city. Aviation and a reconnaissance drone are the same story in
+ * a different shape, and `unknown` is a guess we should not dress as a location.
+ */
+const LAUNCHABLE: ReadonlySet<TargetType> = new Set(['uav', 'jet_uav', 'cruise', 'ballistic']);
+
+/**
+ * The two seas, which are launch origins in their own right.
+ *
+ * A cruise missile fired from a ship in the Black Sea is a real launch from ground
+ * nobody holds, and it is the earliest warning there is for the south coast. The
+ * reservoirs on the same list are inland Ukrainian water and are not origins.
+ */
+const LAUNCH_WATERS: ReadonlySet<string> = new Set(['Чорне море', 'Азовське море']);
+
+/**
+ * Two conditions, both the user's: a launch marker is only for a drone or a missile,
+ * and it can only stand on ground Ukraine does not hold. Membership of the launch-site
+ * list is what carries the second — every entry there is in Russia or occupied Crimea
+ * — with the two seas added, since open water is nobody's territory.
+ *
+ * Anything else naming "пуск" still yields an origin, which draws nothing, and the
+ * message still reaches the feed as text. Nothing is lost but the false marker.
+ */
+function isLaunchOrigin(placeName: string, type: TargetType): boolean {
+  if (!LAUNCHABLE.has(type)) return false;
+  return isKnownLaunchSite(placeName) || LAUNCH_WATERS.has(placeName);
+}
+
 /*
  * What makes an untyped line a target report at all.
  *
@@ -337,9 +371,18 @@ function bareMention(
     if (place?.kind !== 'settlement') continue;
     if (place.oblast) context.oblast = place.oblast;
 
-    // "Пуски шахедів з району Донецьку, Орла та Гвардійського" reaches here with no
-    // cue at all; the names are launch sites and must not become positions.
-    if (LAUNCH.test(rest)) return originOnly(place, type, rest, cleaned, true);
+    /*
+     * "Пуски шахедів з району Донецьку, Орла та Гвардійського" reaches here with no
+     * cue at all; the names are launch sites and must not become positions.
+     *
+     * The marker is a separate question from the position: a bare place in a launch
+     * report never becomes a target wherever it is, but it only earns the launch burst
+     * if it is an enemy site. This is the path that put "Пуск · КАБ" on Kharkiv — the
+     * other two were guarded and this one was not.
+     */
+    if (LAUNCH.test(rest)) {
+      return originOnly(place, type, rest, cleaned, isLaunchOrigin(place.name, type));
+    }
 
     return [{
       type,
@@ -441,7 +484,7 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
       return sites.flatMap((site) => originOnly(
         { name: site.name, lat: site.lat, lon: site.lon, oblast: null,
           kind: 'oblast', confidence: 0.5 },
-        launchType, rest, cleaned, true,
+        launchType, rest, cleaned, isLaunchOrigin(site.name, launchType),
       ));
     }
   }
@@ -588,7 +631,10 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
    * neither is drawn as a target; only the launch is drawn at all.
    */
   if (hits[0]!.relation === 'from' || (LAUNCH.test(rest) && hits[0]!.relation !== 'towards')) {
-    return originOnly(hits[0]!.place, type, rest, cleaned, LAUNCH.test(rest));
+    return originOnly(
+      hits[0]!.place, type, rest, cleaned,
+      LAUNCH.test(rest) && isLaunchOrigin(hits[0]!.place.name, type),
+    );
   }
 
   const destination = hits[0]!;

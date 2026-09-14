@@ -165,27 +165,39 @@ function targetIcon(spec, course, count, relation, rel) {
   const cls = `tgt-mark${heading ? ' heading' : ''} t-${rel?.tier ?? 'mid'}`;
 
   /*
-   * A heading target is drawn *behind* its destination, on the side it is coming
-   * from, with its nose pointing at the town — not sitting on the town itself.
+   * A heading target is drawn *off* its destination, with a dashed leader pointing at
+   * the town — never on the town itself.
    *
-   * Placing it on the settlement said the drone was there; the hollow outline said
-   * otherwise, but the position spoke louder. Offsetting it backwards along its own
-   * course says "approaching from here" with the geometry rather than with a legend,
-   * and it frees the town label underneath.
+   * "курс на Ржищів" means the drone is somewhere else and Ржищів is where it is
+   * pointed. Drawing it on Ржищів states the one thing the message did not say, and
+   * the hollow outline meant to signal that was never going to outweigh a position.
    *
-   * Screen axes: x right, y down, course measured clockwise from north. Travelling
-   * along (sin, -cos), so the tail sits at the negation of that.
+   * Three things were wrong here and each defeated the next:
+   *
+   *  - With no parsed compass course the offset was skipped entirely, so the marker
+   *    sat exactly on the settlement — and about half of all targets have no course.
+   *    An unknown direction is now drawn *above* the town rather than on it: the
+   *    dashed ring already says the bearing is unknown, so the geometry does not have
+   *    to invent one, but it must still not claim the town.
+   *  - The offset was 0.85 of the icon, about 22px — close enough to read as "there".
+   *    Roughly two icons of clearance is what separates them at a glance.
+   *  - The leader pointed backwards. Rotating a downward unit vector by `a` gives
+   *    (-sin a, cos a); travelling along course `c` is (sin c, -cos c), so the angle
+   *    is 180 + c, not 180 - c. It was only ever right for due north and due south.
+   *
+   * Screen axes: x right, y down, course clockwise from north.
    */
-  const lead = Math.round(tier.size * 0.85);
+  const lead = Math.round(tier.size * 2.2);
   let shift = '';
   let leader = '';
-  if (heading && course !== null) {
-    const rad = (course * Math.PI) / 180;
+  if (heading) {
+    // Unknown course: straight up, leader straight back down onto the town.
+    const rad = course === null ? Math.PI : (course * Math.PI) / 180;
     const dx = -Math.sin(rad) * lead;
     const dy = Math.cos(rad) * lead;
+    const lrot = 180 + (course === null ? 180 : course);
     shift = `--dx:${dx.toFixed(1)}px;--dy:${dy.toFixed(1)}px;`;
-    // Rotating a downward unit vector clockwise by (180 - course) points it forward.
-    leader = `<i class="lead" style="--lead:${lead}px;--lrot:${(180 - course).toFixed(1)}deg"></i>`;
+    leader = `<i class="lead" style="--lead:${lead}px;--lrot:${lrot.toFixed(1)}deg"></i>`;
   }
 
   /*
@@ -943,8 +955,14 @@ function drawTrack(track, now, zoom) {
    * a heading, not a drawing of the past. The count of merged sightings stays in the
    * popup for anyone who wants it.
    */
+  /*
+   * `headingOf`, not the raw per-message course: it falls back to the track's own last
+   * leg and then to the reported origin, so a target whose message named no compass
+   * direction still gets one when the sightings themselves imply it. Passing the raw
+   * course threw that away at the one place it is drawn.
+   */
   const marker = L.marker([t.lat, t.lon], {
-    icon: targetIcon(spec, t.course, t.count, t.relation, track.rel),
+    icon: targetIcon(spec, headingOf(track), t.count, t.relation, track.rel),
     opacity,
     riseOnHover: true,
     // Tier first, then recency within it: a near flight is never buried under a far one.

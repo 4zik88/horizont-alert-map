@@ -83,6 +83,22 @@ export const LAUNCH_SITES: LaunchSite[] = [
     lat: 46.711, lon: 38.274,
     forms: ['єйськ', 'ейськ', 'єйська', 'єйську'],
   },
+  /*
+   * Occupied Crimea. Launches from here are real and are the only ones that happen on
+   * Ukrainian soil — which is why the "no launches inside Ukraine" rule is enforced by
+   * membership of this list rather than by a border test. Both are in the gazetteer as
+   * ordinary settlements, and inside a launch report this entry has to win.
+   */
+  {
+    name: 'Чауда',
+    lat: 45.032, lon: 36.011,
+    forms: ['чауда', 'чауди', 'чауді', 'чаудою'],
+  },
+  {
+    name: 'Гвардійське',
+    lat: 45.117, lon: 33.983,
+    forms: ['гвардійське', 'гвардійського', 'гвардійському'],
+  },
 ];
 
 /** Does any window of this text name a site? Used to decide whether brackets matter. */
@@ -157,4 +173,22 @@ export function findLaunchSites(line: string): LaunchSite[] {
     }
   }
   return found;
+}
+
+/**
+ * Is this the name of a site weapons are actually launched *from*?
+ *
+ * The map drew "Пуск · КАБ" on Kharkiv, because the line said "пуск" and Kharkiv was
+ * the only place in it. A KAB over Kharkiv is a strike on Kharkiv — the exact class of
+ * thing this tool must never display — and it read as an enemy launch site sitting in
+ * a Ukrainian city.
+ *
+ * So a launch is drawn only at a place on this list. Every entry is in Russia or in
+ * occupied territory, which is the whole of the user's rule: launches do not happen on
+ * ground Ukraine holds. A line naming a launch from anywhere else still yields an
+ * origin with no position — invisible on the map — and still reaches the feed as text.
+ */
+export function isKnownLaunchSite(name: string): boolean {
+  const wanted = normalise(name);
+  return LAUNCH_SITES.some((site) => normalise(site.name) === wanted);
 }

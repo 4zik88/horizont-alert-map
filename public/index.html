@@ -5,8 +5,9 @@
 <!-- viewport-fit=cover so the map reaches under the notch; the UI uses safe-area insets. -->
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
 <meta name="robots" content="noindex, nofollow, noarchive">
-<!-- origin only: the map token is in a cookie, never in the URL, so the
-     origin leaks nothing — and tile servers reject unidentified referrers. -->
+<!-- Origin only. The page's own address carries the map token, so a full-path
+     referrer would hand it to every tile server the map talks to; the origin alone
+     leaks nothing, and tile servers reject unidentified referrers outright. -->
 <meta name="referrer" content="origin">
 <meta name="theme-color" content="#0d1117">
 <title>Horizont</title>
@@ -66,8 +67,14 @@
 
 <noscript><p class="nojs">Для карти потрібен JavaScript.</p></noscript>
 
-<script src="/vendor/leaflet.js"></script>
-<script src="/config.js"></script>
-<script src="/app.js"></script>
+<!-- A failed script leaves a black screen and no explanation — which is exactly
+     what a lapsed session looked like on a phone. Say so instead. -->
+<p id="boot" class="boot" hidden>Не вдалося завантажити карту.<br>Відкрийте посилання з Telegram ще раз.</p>
+<script>
+  function hzBootFailed() { document.getElementById('boot').hidden = false; }
+</script>
+<script src="/vendor/leaflet.js" onerror="hzBootFailed()"></script>
+<script src="/config.js" onerror="hzBootFailed()"></script>
+<script src="/app.js" onerror="hzBootFailed()"></script>
 </body>
 </html>

@@ -4,7 +4,7 @@ import { extname, join, normalize, resolve } from 'node:path';
 import type { Repo } from '../db/repo.js';
 import { logger } from '../logger.js';
 import type { MapApi } from './api.js';
-import { grantSession, hasValidCookie, isConfigured, isValidToken } from './auth.js';
+import { hasValidCookie, isConfigured, isValidToken, setSessionCookie } from './auth.js';
 
 export interface ServerOptions {
   port: number;
@@ -28,10 +28,10 @@ const MIME: Record<string, string> = {
 /**
  * The one HTTP surface: health, the map, and the map's data.
  *
- * Everything except `/healthz` and `/robots.txt` sits behind the map token. The token
- * appears once, in the path, and is immediately exchanged for an httpOnly cookie —
- * keeping it out of `Referer` headers and access logs. Anything unauthorised gets a
- * flat 404, so the server never confirms that a valid link exists.
+ * Everything except `/healthz` and `/robots.txt` sits behind the map token. `/t/<token>`
+ * serves the map and sets the session cookie in one response; the page's own requests
+ * then ride the cookie. Anything unauthorised gets a flat 404, so the server never
+ * confirms that a valid link exists.
  */
 export function startServer(repo: Repo, api: MapApi | undefined, opts: ServerOptions): Server {
   const root = resolve(opts.publicDir);
@@ -78,12 +78,22 @@ async function handle(
 
   if (!isConfigured()) return notFound(res);
 
-  // /t/<token> exchanges the secret for a cookie, then redirects to a clean URL so
-  // the token is never in the address bar, history, or an outgoing Referer.
+  /*
+   * /t/<token> is the map itself, not a doorway to it.
+   *
+   * It used to set the cookie and redirect to `/`, which meant the cookie was the only
+   * thing standing between the reader and a flat 404 — and on a phone the cookie goes
+   * missing routinely: a home-screen app has its own jar, Telegram's in-app browser
+   * has another, Safari clears site data for a site left alone. Serving the page here
+   * makes the link itself sufficient, so an old bookmark or home-screen icon opens the
+   * map however long it has been. The cookie still rides along, because every asset
+   * and every poll after this one is requested from `/`.
+   */
   const tokenMatch = /^\/t\/([A-Za-z0-9_-]{8,128})\/?$/.exec(path);
   if (tokenMatch) {
     if (!isValidToken(tokenMatch[1]!)) return notFound(res);
-    return grantSession(res, '/');
+    setSessionCookie(res);
+    return serveStatic(res, root, '/index.html');
   }
 
   if (!hasValidCookie(req)) return notFound(res);
