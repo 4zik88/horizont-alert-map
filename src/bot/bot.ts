@@ -92,6 +92,14 @@ export class Bot {
     const message = update.message ?? update.edited_message;
     if (!message) return;
 
+    /*
+     * A live location moves by *editing* its original message, so an edit is an
+     * update to a location already known — not a new one. The distinction decides
+     * whether the user hears about it: confirming every edit turned a 15-minute
+     * share into a steady stream of identical "Live-локацію прийнято" messages.
+     */
+    const isEdit = update.message === undefined;
+
     const chatId = message.chat.id;
     const username = message.from?.username ?? message.chat.username;
 
@@ -101,7 +109,7 @@ export class Bot {
     }
 
     if (message.location) {
-      await this.onLocation(message, chatId, username);
+      await this.onLocation(message, chatId, username, isEdit);
       return;
     }
 
@@ -136,6 +144,7 @@ export class Bot {
     message: TelegramMessage,
     chatId: number,
     username: string | undefined,
+    isEdit = false,
   ): Promise<void> {
     const location = message.location!;
     const now = Date.now();
@@ -153,6 +162,14 @@ export class Bot {
       liveUntil: live ? now + location.live_period! * 1000 : null,
       now,
     });
+
+    /*
+     * Silent for a live update. Telegram sends an edit every time the position moves,
+     * which during a walk is every few seconds — the user already sees the moving pin
+     * in their own chat, and a confirmation per edit is pure noise in the one channel
+     * that has to stay readable during a raid.
+     */
+    if (isEdit) return;
 
     const user = this.users.get(chatId);
     const oblast = user?.oblast ? oblastByKey(user.oblast)?.name : undefined;

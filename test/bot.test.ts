@@ -119,6 +119,29 @@ describe('Bot commands', () => {
     assert.equal(user?.oblast, 'odeska', 'oblast follows the user');
   });
 
+  /*
+   * Telegram edits the message every time the position moves — every few seconds
+   * during a walk. Replying to each one turned a 15-minute share into a wall of
+   * identical confirmations in the one chat that has to stay readable during a raid.
+   */
+  test('a live update is stored silently', async () => {
+    const { feed, sent } = setup();
+    await feed(location(100, 50.31, 34.6, 3600));
+    const afterFirst = sent.length;
+
+    for (let i = 0; i < 3; i++) {
+      await feed({
+        update_id: ++updateId,
+        edited_message: {
+          message_id: 1, date: NOW / 1000, chat: { id: 100, type: 'private' },
+          location: { latitude: 50.31 + i * 0.01, longitude: 34.6, live_period: 3600 },
+        },
+      });
+    }
+
+    assert.equal(sent.length, afterFirst, 'edits must not each send a confirmation');
+  });
+
   test('a location before /start still registers the user', async () => {
     const { users, feed } = setup();
     await feed(location(100, 50.31, 34.6));
