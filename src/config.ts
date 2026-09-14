@@ -66,6 +66,15 @@ const schema = z.object({
   // generates one.
   MAP_TOKEN: z.string().optional(),
   PUBLIC_DIR: z.string().default('./public'),
+  /*
+   * Maintenance. Railway volumes have no automatic backups, and the ingest log grows
+   * without bound, so both run daily inside the single process that owns the volume.
+   */
+  BACKUP_DIR: z.string().min(1).default('./data/backups'),
+  BACKUP_KEEP: z.coerce.number().int().min(1).max(90).default(7),
+  RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(90),
+  MAINTENANCE_INTERVAL_MS: z.coerce.number().int().min(60_000).default(86_400_000),
+
   MAP_TARGET_WINDOW_MS: z.coerce.number().int().min(60_000).default(3_600_000),
   MAP_FEED_LIMIT: z.coerce.number().int().min(10).max(500).default(120),
 });

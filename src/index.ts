@@ -14,6 +14,7 @@ import { AppState, Users } from './db/users.js';
 import { Notifier, DEFAULT_NOTIFIER } from './notify/notifier.js';
 import { AlertWatcher } from './alerts/watcher.js';
 import { allowedChatIds, allowedUsernames } from './bot/access.js';
+import { Maintenance } from './maintenance/index.js';
 
 const SHUTDOWN_GRACE_MS = 5_000;
 
@@ -126,6 +127,18 @@ async function main(): Promise<void> {
   });
   watcher.start();
   stoppables.push(watcher);
+
+  /*
+   * Backups and retention live in the same process because the volume attaches to
+   * exactly one service, and SQLite is single-writer.
+   */
+  const maintenance = new Maintenance(db, {
+    backup: { dir: config.BACKUP_DIR, keep: config.BACKUP_KEEP },
+    retentionMs: config.RETENTION_DAYS * 86_400_000,
+    intervalMs: config.MAINTENANCE_INTERVAL_MS,
+  });
+  maintenance.start();
+  stoppables.push(maintenance);
 
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
