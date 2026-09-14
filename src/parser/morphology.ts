@@ -106,6 +106,11 @@ function inflectWord(word: string): Set<string> {
       // first word alone, which collided with an unrelated village called "Криве".
       const opened = word.replace(/і([бвгджзклмнпрстфхцчш]+)$/u, 'о$1');
       add(opened + 'а', opened + 'у', opened + 'ом', opened + 'і');
+    } else if (word.endsWith('й')) {
+      // Soft masculine in -й: Джанкой -> Джанкоя, Джанкою. The generic consonant
+      // rule above produces "Джанкойа", which is not a word anyone writes.
+      const base = word.slice(0, -1);
+      add(base + 'я', base + 'ю', base + 'єм', base + 'ї', base + 'єві');
     } else if (word.endsWith('ок')) {
       // Лозок -> Лозка (fleeting vowel)
       const base = word.slice(0, -2);

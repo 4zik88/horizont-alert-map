@@ -10,7 +10,7 @@ import type { ParsedTarget } from './rules.js';
  * Bump to re-parse the entire archive after a parser change:
  *   UPDATE messages SET parse_state='pending' WHERE parser_version < <new>;
  */
-export const PARSER_VERSION = 5;
+export const PARSER_VERSION = 6;
 
 export interface WorkerOptions {
   batchSize: number;

@@ -28,6 +28,25 @@ export interface MapTarget {
   at: number;
 }
 
+/**
+ * A reported launch, drawn at its origin.
+ *
+ * Deliberately a separate collection rather than a target with a flag: a launch is
+ * the one thing on this map that is *not* where a threat currently is, and keeping
+ * the two apart in the payload is what stops a later change from quietly rendering
+ * it as one.
+ */
+export interface MapLaunch {
+  id: number;
+  type: string;
+  count: number;
+  label: string | null;
+  lat: number;
+  lon: number;
+  course: number | null;
+  at: number;
+}
+
 export interface FeedItem {
   id: number;
   channel: string;
@@ -39,6 +58,7 @@ export interface FeedItem {
 export interface MapState {
   now: number;
   targets: MapTarget[];
+  launches: MapLaunch[];
   feed: FeedItem[];
   alerts: {
     oblast: string;
@@ -76,12 +96,19 @@ interface TargetRow {
   course_deg: number | null; relation: string; confidence: number; observed_at: number;
 }
 
+interface LaunchRow {
+  id: number; type: string; count: number;
+  from_name: string | null; from_lat: number; from_lon: number;
+  course_deg: number | null; observed_at: number;
+}
+
 interface FeedRow {
   id: number; channel: string; text: string; posted_at: number; parse_state: string;
 }
 
 export class MapApi {
   private readonly selectTargets;
+  private readonly selectLaunches;
   private readonly selectFeed;
   private readonly selectAlerts;
   private readonly selectChannels;
@@ -101,6 +128,25 @@ export class MapApi {
          AND m.is_sensitive = 0
        ORDER BY t.observed_at DESC
        LIMIT 800
+    `);
+
+    /*
+     * Launch reports: an origin and no destination. The `to_lat IS NULL` is what
+     * distinguishes them — the parser records a launch that way precisely so it
+     * cannot be drawn as a position.
+     */
+    this.selectLaunches = db.prepare(`
+      SELECT t.id, t.type, t.count, t.from_name, t.from_lat, t.from_lon,
+             t.course_deg, t.observed_at
+        FROM targets t
+        JOIN messages m ON m.id = t.message_id
+       WHERE t.observed_at >= ?
+         AND t.to_lat IS NULL
+         AND t.from_lat IS NOT NULL
+         AND t.relation = 'from'
+         AND m.is_sensitive = 0
+       ORDER BY t.observed_at DESC
+       LIMIT 200
     `);
 
     // The feed carries parsed and unparsed messages alike — unresolved text is shown
@@ -140,6 +186,19 @@ export class MapApi {
       }),
     );
 
+    const launches = (this.selectLaunches.all(since) as LaunchRow[]).map(
+      (r): MapLaunch => ({
+        id: r.id,
+        type: r.type,
+        count: r.count,
+        label: r.from_name,
+        lat: r.from_lat,
+        lon: r.from_lon,
+        course: r.course_deg,
+        at: r.observed_at,
+      }),
+    );
+
     const feed = (this.selectFeed.all(this.opts.feedLimit) as FeedRow[]).map(
       (r): FeedItem => ({
         id: r.id,
@@ -170,6 +229,6 @@ export class MapApi {
     const channels = (this.selectChannels.all() as { channel: string; last_success_at: number | null }[])
       .map((r) => ({ channel: r.channel, lastSuccessAt: r.last_success_at }));
 
-    return { now, targets, feed, alerts, channels };
+    return { now, targets, launches, feed, alerts, channels };
   }
 }

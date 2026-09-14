@@ -202,6 +202,24 @@ body.sheet-open .leaflet-control-attribution {
 
 .zoomed-out .tgt-mark em { display: none; }
 
+/* Launch sites read as a hollow burst, never a silhouette: the rays are stroked
+   rather than filled, so the two cannot be confused at thumbnail size.
+
+   Both rules are needed. CSS beats a presentation attribute, so `.tgt-mark svg`
+   filling with currentColor turned the rays into blobs, and clearing the fill here
+   then erased the centre dot along with them. */
+.launch svg { fill: none; }
+.launch svg circle { fill: currentColor; }
+
+.launch em {
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+/* A launch stays visible when zoomed out — knowing something was fired matters at
+   country scale — but its label does not, same as a target's. */
+.zoomed-out .launch em { display: none; }
+
 /* Count badge, only drawn when more than one was reported. */
 .tgt-mark s {
   position: absolute;

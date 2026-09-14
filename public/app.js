@@ -14,6 +14,13 @@
 
 const POLL_MS = 10000;
 const FADE_MS = 30 * 60 * 1000; // targets older than this are spent, per the spec
+/*
+ * Launches stay legible longer than targets. A drone reported over a town 30 minutes
+ * ago has moved on; a launch from Crimea 30 minutes ago is still the reason something
+ * is in the air, and fading it to 12% made the marker effectively invisible for most
+ * of the window the server keeps sending it.
+ */
+const LAUNCH_FADE_MS = 60 * 60 * 1000;
 const REDRAW_MS = 15000;        // re-age markers without refetching
 
 /*
@@ -67,6 +74,38 @@ const TYPES = {
     path: 'M12 2 L19 20 L12 16 L5 20 Z',
   },
 };
+
+/*
+ * Launch marker.
+ *
+ * A launch site is the one thing on this map that is NOT where a threat currently
+ * is — it is where one started, minutes or hours ago. So it must not look like a
+ * target at any size: no silhouette, no heading, a hollow burst radiating from a
+ * point instead. The label says "Пуск" rather than the weapon, for the same reason.
+ */
+const LAUNCH_COLOR = '#ff9bd2';
+
+function launchIcon(spec, count) {
+  const badge = count > 1 ? `<s>${count}</s>` : '';
+
+  return L.divIcon({
+    className: 'tgt',
+    html:
+      `<span class="tgt-mark launch" style="--c:${LAUNCH_COLOR}">` +
+      '<svg viewBox="0 0 24 24" width="24" height="24">' +
+      // Rays outward from the centre: an origin, pointing everywhere and nowhere.
+      '<g stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none">' +
+      '<path d="M12 9.5 L12 3.5"/><path d="M14.5 10.5 L18.7 6.3"/>' +
+      '<path d="M9.5 10.5 L5.3 6.3"/><path d="M15.5 13 L21.5 13"/>' +
+      '<path d="M8.5 13 L2.5 13"/>' +
+      '</g>' +
+      '<circle cx="12" cy="12.5" r="2.6" fill="currentColor"/>' +
+      '</svg>' +
+      `<em>Пуск${spec.short === 'Ціль' ? '' : ' · ' + spec.short}</em>${badge}</span>`,
+    iconSize: [0, 0],
+    iconAnchor: [0, 0],
+  });
+}
 
 /**
  * One marker.
@@ -125,6 +164,7 @@ applyZoomClass();
 const alertLayer = L.layerGroup().addTo(map);
 const raionLayer = L.layerGroup().addTo(map);
 const targetLayer = L.layerGroup().addTo(map);
+const launchLayer = L.layerGroup().addTo(map);
 const meLayer = L.layerGroup().addTo(map);
 
 let state = null;
@@ -160,11 +200,11 @@ function recallMe() {
 
 const el = (id) => document.getElementById(id);
 
-function ageOpacity(at, now) {
+function ageOpacity(at, now, over = FADE_MS) {
   const age = now - at;
   if (age <= 0) return 1;
-  if (age >= FADE_MS) return 0.12;
-  return 1 - 0.88 * (age / FADE_MS);
+  if (age >= over) return 0.12;
+  return 1 - 0.88 * (age / over);
 }
 
 function minutesAgo(at, now) {
@@ -303,6 +343,42 @@ function drawTargets() {
   }
 }
 
+/*
+ * Launch sites.
+ *
+ * Drawn under the targets and never counted as one: these say "something started
+ * here", not "something is here". The popup spells that out rather than leaving the
+ * icon to carry the whole distinction.
+ */
+function drawLaunches() {
+  launchLayer.clearLayers();
+  if (!state || !state.launches) return;
+
+  const now = Date.now();
+
+  for (const l of state.launches) {
+    const spec = TYPES[l.type] || TYPES.unknown;
+    const opacity = ageOpacity(l.at, now, LAUNCH_FADE_MS);
+
+    const marker = L.marker([l.lat, l.lon], {
+      icon: launchIcon(spec, l.count),
+      opacity: opacity * 0.9,
+      riseOnHover: true,
+      // Always below a live target: what is in the air outranks where it came from.
+      zIndexOffset: Math.round(opacity * 200) - 400,
+    });
+
+    marker.bindPopup(
+      `<strong>Пуск: ${spec.label}${l.count > 1 ? ' ×' + l.count : ''}</strong><br>` +
+      (l.label ? escapeHtml(l.label) + '<br>' : '') +
+      `<span class="muted">${minutesAgo(l.at, now)} тому</span><br>` +
+      '<span class="muted">місце пуску, не поточна позиція</span>',
+    );
+
+    marker.addTo(launchLayer);
+  }
+}
+
 function drawMe() {
   meLayer.clearLayers();
   if (!me) return;
@@ -361,6 +437,7 @@ function drawStatus() {
 
 function redraw() {
   drawTargets();
+  drawLaunches();
   drawFeed();
   drawStatus();
 }

@@ -214,7 +214,17 @@ async function main(): Promise<void> {
     db.transaction(() => {
       for (const node of nodes) {
         const tags = node.tags ?? {};
-        const name = tags['name'];
+        /*
+         * `name:uk` first, `name` second.
+         *
+         * In occupied territory OSM's `name` is Russian — Crimea comes through as
+         * Гвардейское, Керчь, Євпаторія as Евпатория — while the channels write
+         * Ukrainian throughout. 327 places were indexed under a spelling that never
+         * appears in a message, so a launch reported from the Hvardiiske airbase
+         * matched a same-named village in Khmelnytskyi oblast instead and drew a
+         * marker 600 km from the real place.
+         */
+        const name = tags['name:uk'] ?? tags['name'];
         const place = tags['place'];
         if (!name || !place) continue;
         // Latin-only names are transliterations of somewhere else; skip them.
@@ -235,9 +245,16 @@ async function main(): Promise<void> {
 
         const id = Number(info.lastInsertRowid);
         toponyms++;
-        for (const form of generateForms(name)) {
-          insertForm.run(form, id);
-          forms++;
+        // Index the other spelling too: a message quoting the Russian name of an
+        // occupied place should still resolve.
+        const spellings = new Set([name, tags['name'], tags['name:uk']].filter(
+          (v): v is string => typeof v === 'string' && /[\p{Script=Cyrillic}]/u.test(v),
+        ));
+        for (const spelling of spellings) {
+          for (const form of generateForms(spelling)) {
+            insertForm.run(form, id);
+            forms++;
+          }
         }
       }
     })();
