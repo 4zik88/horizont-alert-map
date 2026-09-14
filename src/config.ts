@@ -33,8 +33,17 @@ const schema = z.object({
   LLM_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(20_000),
 
   GROQ_API_KEY: z.string().optional(),
-  // Groq rotates its catalogue; `npm run llm:check` lists what your key can use.
-  GROQ_MODEL: z.string().default('llama-3.3-70b-versatile'),
+  /*
+   * Groq rotates its catalogue and retires models without notice — the previous
+   * default returned 404 "does not exist" against a perfectly valid key, which reads
+   * like an auth failure and is not. `npm run llm:check` lists what a key can
+   * actually use and measures recovery on real unresolved messages.
+   *
+   * Chosen by measuring the three candidates over the same eight messages:
+   * qwen3.8-27b recovered 4/8 at 300 ms per call, gpt-oss-120b 3/8 at 1,139 ms and
+   * gpt-oss-20b 2/8 at 930 ms, both while being rate limited.
+   */
+  GROQ_MODEL: z.string().min(1).default('qwen/qwen3.8-27b'),
 
   // Consumed in later steps. Declared here so the shape is known and `.env.example`
   // stays honest, but never required — step 1 runs with zero secrets configured.
