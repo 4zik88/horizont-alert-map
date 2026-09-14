@@ -68,6 +68,9 @@ const RELATION_CUES: { relation: Relation; source: string }[] = [
   // (accusative). Either way it locates the target inside the region.
   { relation: 'over', source: 'на\\s+(?:півноч[іi]|півдн[іi]|сход[іi]|заход[іi]|північ|південь|схід|захід)' },
   { relation: 'towards', source: 'на' },
+  // Last resort: a bare "в"/"у" before a capitalised name — "з Броварів у центр
+  // Києва". Every more specific "в ..." cue is matched before this one.
+  { relation: 'towards', source: '[ву]' },
 ];
 
 /*
@@ -94,7 +97,7 @@ const CUE_RE = new RegExp(
  * Filler between the cue and the name: "у напрямку центру Києва", "на н.п. Гуляйполе".
  * Without it the capitalised name is never reached and the cue is discarded.
  */
-const PLACE_FILLER = '(?:(?:центр[ауі]|окол[иі]ц[іь])\\s+|(?:н\\.?\\s?п\\.?|м\\.|с\\.|смт)\\s*)?';
+const PLACE_FILLER = '(?:(?:центр[ауі]?|окол[иі]ц[іь])\\s+|(?:н\\.?\\s?п\\.?|м\\.|с\\.|смт)\\s*)?';
 const CAP_WORD = '[А-ЯІЇЄҐA-Z][^\\s,.;:!?()]*';
 /** `u` but deliberately NOT `i` — the capitalisation is the signal. */
 const PLACE_RE = new RegExp(
@@ -112,11 +115,23 @@ const LEADING_COMPASS =
   /^(?:північн|південн|східн|західн|північ|південь|схід|захід)[а-яіїєґ]*(?:\s*[-–—]?\s*(?:північн|південн|східн|західн|північ|південь|схід|захід)[а-яіїєґ]*)?/iu;
 const LEADING_NOISE = /^[\s(«"„\-–—,:]+/u;
 
-/** The phrase a cue points at, or undefined when it points at nothing nameable. */
-function placeAfter(text: string): string | undefined {
+/*
+ * The phrases a cue might point at, best guess first.
+ *
+ * Skipping a leading direction cannot be unconditional: "Південне" is a town in Odesa
+ * oblast and "на Південне/Чорноморськ/Одесу" would lose its destination to a rule
+ * meant for "на північний-Захід (Рудниця...)". So the literal reading is offered
+ * first and the direction-skipped one second, and resolution picks whichever names a
+ * real place.
+ */
+function placeCandidates(text: string): string[] {
   const trimmed = text.replace(LEADING_NOISE, '');
-  const beyondCompass = trimmed.replace(LEADING_COMPASS, '').replace(LEADING_NOISE, '');
-  return PLACE_RE.exec(beyondCompass)?.[1];
+  const direct = PLACE_RE.exec(trimmed)?.[1];
+
+  const beyond = trimmed.replace(LEADING_COMPASS, '').replace(LEADING_NOISE, '');
+  const skipped = beyond === trimmed ? undefined : PLACE_RE.exec(beyond)?.[1];
+
+  return [...new Set([direct, skipped].filter((v): v is string => v !== undefined))];
 }
 
 /*
@@ -162,6 +177,49 @@ export interface ParseContext {
 
 /** "над містом", "в напрямку міста" — refers back to the header city. */
 const CITY_WORD = /^міст[оаиуе]м?$/iu;
+
+/*
+ * A launch report names where the weapons came *from*, not where they are.
+ *
+ * "Пуски шахедів з району Донецьку, Орла та Гвардійського" was drawing a drone
+ * icon sitting on Hvardiiske — a launch site — as though a target were overhead
+ * there. Same for "пуски Калібрів з акваторії Чорного моря". The place is an
+ * origin, the destination is unknown, and a marker at the origin is worse than no
+ * marker: it says a thing is somewhere it is not.
+ */
+const LAUNCH = /(?<![\p{L}\p{N}])пуск[а-яіїєґ]*/iu;
+
+/**
+ * A target known only by where it started.
+ *
+ * Carries no destination, so the map draws nothing and the message still reaches the
+ * feed as text — which is the specified behaviour for anything not fully resolved.
+ */
+function originOnly(
+  place: Resolution,
+  type: TargetType,
+  rest: string,
+  cleaned: string,
+): ParsedTarget[] {
+  return [{
+    type,
+    rawType: rawTypeOf(rest),
+    count: extractCount(rest),
+    oblast: place.oblast,
+    relation: 'from',
+    toName: null,
+    toLat: null,
+    toLon: null,
+    fromName: place.name,
+    fromLat: place.lat,
+    fromLon: place.lon,
+    // Only a course the line actually states. Without a destination there is no pair
+    // of points to derive one from, and a guessed bearing off a launch site is noise.
+    courseDeg: extractCourse(rest),
+    confidence: place.confidence,
+    sourceLine: cleaned,
+  }];
+}
 
 /**
  * Parse one line into zero or more targets.
@@ -219,6 +277,10 @@ function bareMention(
     const place = context.gazetteer.resolve(match[1]!, context.oblast);
     if (place?.kind !== 'settlement') continue;
     if (place.oblast) context.oblast = place.oblast;
+
+    // "Пуски шахедів з району Донецьку, Орла та Гвардійського" reaches here with no
+    // cue at all; the names are launch sites and must not become positions.
+    if (LAUNCH.test(rest)) return originOnly(place, type, rest, cleaned);
 
     return [{
       type,
@@ -294,10 +356,9 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
   const matches = [...rest.matchAll(CUE_RE)]
     .map((m) => {
       const tail = rest.slice(m.index + m[0].length);
-      return { cue: m[1]!, phrase: placeAfter(tail), tail };
+      return { cue: m[1]!, phrases: placeCandidates(tail), tail };
     })
-    .filter((m): m is { cue: string; phrase: string; tail: string } =>
-      m.phrase !== undefined || matchWater(m.tail) !== undefined);
+    .filter((m) => m.phrases.length > 0 || matchWater(m.tail) !== undefined);
   if (matches.length === 0) return bareMention(rest, type, inferred, cleaned, context);
 
   // Two passes. An oblast named in a line is usually *context* — "БпЛА на
@@ -306,17 +367,19 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
   // disambiguate the settlements, and only stand in as a destination when the line
   // names no settlement at all ("КАБи на Дніпропетровщину").
   const cues = matches.map((m) => ({
-    relation: relationFor(m.cue, m.phrase),
-    phrase: m.phrase ?? '',
+    relation: relationFor(m.cue, m.phrases[0]),
+    phrases: m.phrases,
     tail: m.tail,
   }));
 
   for (const cue of cues) {
-    const oblast = matchOblast(cue.phrase) ?? matchOblast(cue.phrase.split(/\s+/)[0] ?? '');
-    if (oblast) context.oblast = oblast.key;
+    for (const phrase of cue.phrases) {
+      const oblast = matchOblast(phrase) ?? matchOblast(phrase.split(/\s+/)[0] ?? '');
+      if (oblast) context.oblast = oblast.key;
+    }
   }
 
-  const resolvePhrase = (phrase: string, tail: string): Resolution | undefined => {
+  const resolveOne = (phrase: string, tail: string): Resolution | undefined => {
     const bare = phrase.trim();
     // "над містом" points back at the header city.
     if (CITY_WORD.test(bare)) return context.city ?? undefined;
@@ -343,8 +406,16 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
 
   const settlements: { relation: Relation; place: Resolution }[] = [];
   const regions: { relation: Relation; place: Resolution }[] = [];
+  const resolvePhrases = (phrases: string[], tail: string): Resolution | undefined => {
+    for (const phrase of phrases) {
+      const hit = resolveOne(phrase, tail);
+      if (hit) return hit;
+    }
+    return phrases.length === 0 ? resolveOne('', tail) : undefined;
+  };
+
   for (const cue of cues) {
-    const resolved = resolvePhrase(cue.phrase, cue.tail);
+    const resolved = resolvePhrases(cue.phrases, cue.tail);
     if (!resolved) continue;
     (resolved.kind === 'settlement' ? settlements : regions).push({
       relation: cue.relation,
@@ -356,6 +427,13 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
   if (hits.length === 0) return [];
 
   hits.sort((a, b) => RELATION_RANK[b.relation] - RELATION_RANK[a.relation]);
+
+  // Nothing in the line points forward: every place named is somewhere the target
+  // came from, so there is no destination to put a marker on.
+  if (hits[0]!.relation === 'from' || (LAUNCH.test(rest) && hits[0]!.relation !== 'towards')) {
+    return originOnly(hits[0]!.place, type, rest, cleaned);
+  }
+
   const destination = hits[0]!;
 
   // A weaker cue in the same line is where it came from, not a second target.

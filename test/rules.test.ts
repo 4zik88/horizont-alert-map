@@ -22,6 +22,8 @@ seedGazetteer(db, [
   // A deliberate national collision, resolvable only by the oblast heading.
   { name: 'Михайлівка', oblast: 'sumska', place: 'village', population: 1200, lat: 50.9, lon: 34.2 },
   { name: 'Михайлівка', oblast: 'zaporizka', place: 'town', population: 8000, lat: 47.27, lon: 35.23 },
+  // A launch site, for the launch-report cases below.
+  { name: 'Гвардійське', oblast: 'krym', place: 'town', population: 12000, lat: 45.12, lon: 34.02 },
 ]);
 const gaz = new Gazetteer(db);
 const parse = (text: string) => parseMessage(text, gaz);
@@ -164,5 +166,37 @@ describe('geo helpers', () => {
     // Kyiv -> Kharkiv is about 410 km.
     const d = distanceKm(50.4501, 30.5234, 49.9935, 36.2304);
     assert.ok(d > 390 && d < 430, `got ${d}`);
+  });
+});
+
+describe('launch reports', () => {
+  /*
+   * The place in a launch report is where the weapons came from. Drawing a marker on
+   * it says a target is somewhere it is not — the failure that put a drone icon over
+   * Vinnytsia for a launch reported from Crimea.
+   */
+  test('records the launch site as an origin, with no position to draw', () => {
+    const { targets } = parse('Пуски шахедів з Гвардійського.');
+    assert.equal(targets.length, 1);
+    assert.equal(targets[0]!.relation, 'from');
+    assert.equal(targets[0]!.toLat, null);
+    assert.equal(targets[0]!.toName, null);
+    assert.ok(targets[0]!.fromLat !== null, 'the origin should still be known');
+  });
+
+  test('does not invent a course for a launch', () => {
+    const { targets } = parse('пуски шахедів з Гвардійського');
+    assert.equal(targets[0]!.courseDeg, null);
+  });
+
+  /*
+   * A movement *from* the sea *to* a region is not a launch report: the destination
+   * is stated and must survive.
+   */
+  test('keeps a destination when the line states one', () => {
+    const { targets } = parse('Група БпЛА з акваторії Чорного моря - на південь Одещини.');
+    assert.equal(targets.length, 1);
+    assert.equal(targets[0]!.fromName, 'Чорне море');
+    assert.ok(targets[0]!.toLat !== null, 'the destination should still be drawn');
   });
 });
