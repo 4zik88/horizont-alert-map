@@ -14,7 +14,9 @@
 <!-- SVG first for crisp tabs at any size; the PNG covers browsers that ignore it. -->
 <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
 <link rel="icon" href="/icons/icon-192.png" type="image/png" sizes="192x192">
-<link rel="manifest" href="/manifest.webmanifest">
+<!-- use-credentials, or the browser fetches the manifest with credentials omitted,
+     gets the same 404 a stranger gets, and the install silently fails. -->
+<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Horizont">
