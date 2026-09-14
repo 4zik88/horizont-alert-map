@@ -36,6 +36,7 @@ export function parseMessage(text: string, gazetteer: Gazetteer): ParseResult {
     oblast: null,
     type: classifyType(cleaned),
     city: null,
+    launch: false,
   };
   const targets: ParsedTarget[] = [];
 

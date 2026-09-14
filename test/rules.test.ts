@@ -268,3 +268,48 @@ describe('a transit is not a launch', () => {
     assert.equal(targets[0]!.relation, 'launch');
   });
 });
+
+describe('enemy launch sites', () => {
+  /*
+   * These sit outside Ukraine, so the gazetteer has none of them and the launch was
+   * dropped entirely — while they are where most of a night's Shaheds come from.
+   */
+  test('resolves sites the gazetteer cannot know', () => {
+    const { targets } = parse('+ повторні пуски шахедів з району Курська, Брянську та Орла.');
+    assert.deepEqual(targets.map((t) => t.fromName), ['Курськ', 'Брянськ', 'Орел']);
+    assert.ok(targets.every((t) => t.relation === 'launch' && t.toLat === null));
+  });
+
+  test('one launch per site named, not just the first', () => {
+    const { targets } = parse('пуски шахедів: 3 з Смоленська, 10 з Курська, 10 з Орла');
+    assert.equal(targets.length, 3);
+  });
+
+  /*
+   * "з району Навля (Брянська область)" is one site with its region in brackets, and
+   * counting the bracket separately doubled every launch this channel reported.
+   */
+  test('a bracketed region does not become a second launch', () => {
+    const { targets } = parse('Пуск Shahed-136 з району Навля (Брянська область).');
+    assert.deepEqual(targets.map((t) => t.fromName), ['Навля']);
+  });
+
+  /*
+   * Outside a launch report these names are ordinary context. A drone over Chernihiv
+   * oblast that came from Bryansk is not a marker in Russia.
+   */
+  test('only a launch report resolves them', () => {
+    const { targets } = parse('Реактивний БпЛА курсом на Охтирку з Брянської області');
+    assert.ok(targets.every((t) => t.fromName !== 'Брянськ'));
+  });
+
+  /*
+   * `курс` is among the commonest words in these channels; a prefix rule on `курськ`
+   * would turn every stated course into a launch from Kursk.
+   */
+  test('a stated course is not a launch from Kursk', () => {
+    const { targets } = parse('Ударні БпЛА на півдні Сумщини, курс західний.');
+    assert.equal(targets[0]!.relation, 'over');
+    assert.equal(targets[0]!.courseDeg, 270);
+  });
+});

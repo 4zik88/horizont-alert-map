@@ -4,6 +4,7 @@ import { BOUNDARY_LEFT } from './regex.js';
 import { classifyType, extractCount, inferBareType, type TargetType } from './targetTypes.js';
 import { extractApproachCourse, extractCourse } from './compass.js';
 import { matchWater } from './water.js';
+import { findLaunchSites, matchLaunchSite } from './launchSites.js';
 
 /** How a target relates to the place named. */
 export type Relation = 'towards' | 'past' | 'through' | 'over' | 'from' | 'launch';
@@ -104,7 +105,8 @@ const CUE_RE = new RegExp(
  * Filler between the cue and the name: "у напрямку центру Києва", "на н.п. Гуляйполе".
  * Without it the capitalised name is never reached and the cue is discarded.
  */
-const PLACE_FILLER = '(?:(?:центр[ауі]?|окол[иі]ц[іь])\\s+|(?:н\\.?\\s?п\\.?|м\\.|с\\.|смт)\\s*)?';
+const PLACE_FILLER =
+  '(?:(?:центр[ауі]?|окол[иі]ц[іь]|район[уаі]?|р-?н[уаі]?)\\s+|(?:н\\.?\\s?п\\.?|м\\.|с\\.|смт)\\s*)?';
 const CAP_WORD = '[А-ЯІЇЄҐA-Z][^\\s,.;:!?()]*';
 /** `u` but deliberately NOT `i` — the capitalisation is the signal. */
 const PLACE_RE = new RegExp(
@@ -180,6 +182,19 @@ export interface ParseContext {
    * БпЛА над містом!". Without it those messages resolve to nothing at all.
    */
   city: Resolution | null;
+  /**
+   * A launch report opened this message.
+   *
+   * These channels write one line per site under a single heading — "пуски шахедів з
+   * наступних локацій:" then "3 з Смоленська", "10 з Курська" — so only the first
+   * line carries the word. Without carrying it forward, every site but the first was
+   * parsed as an ordinary report, found nothing in the gazetteer, and vanished.
+   *
+   * Deliberately consulted only when deciding whether to look for launch sites, not
+   * when deciding that an origin is a launch: a message that lists launches and then
+   * tracks a target in flight must not turn the second into a launch too.
+   */
+  launch: boolean;
 }
 
 /** "над містом", "в напрямку міста" — refers back to the header city. */
@@ -370,6 +385,26 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
   }
   CUE_RE.lastIndex = 0;
 
+  /*
+   * A launch report naming sites outside Ukraine is handled before anything else:
+   * one message routinely lists several, and each is a separate launch. "пуски
+   * шахедів з наступних локацій: 3 з Смоленська, 10 з Курська, 10 з Орла" is three
+   * events, and taking only the first discarded two thirds of the warning.
+   */
+  if (LAUNCH.test(rest)) context.launch = true;
+
+  if (context.launch) {
+    const sites = findLaunchSites(rest);
+    if (sites.length > 0) {
+      const launchType = classifyType(rest, context.type);
+      return sites.flatMap((site) => originOnly(
+        { name: site.name, lat: site.lat, lon: site.lon, oblast: null,
+          kind: 'oblast', confidence: 0.5 },
+        launchType, rest, cleaned, true,
+      ));
+    }
+  }
+
   let type = classifyType(rest, context.type);
   let inferred = false;
   if (type === 'unknown') {
@@ -410,7 +445,9 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
       const tail = rest.slice(m.index + m[0].length);
       return { cue: m[1]!, phrases: placeCandidates(tail), tail };
     })
-    .filter((m) => m.phrases.length > 0 || matchWater(m.tail) !== undefined);
+    .filter((m) => m.phrases.length > 0
+      || matchWater(m.tail) !== undefined
+      || (LAUNCH.test(rest) && matchLaunchSite(m.tail) !== undefined));
   if (matches.length === 0) return bareMention(rest, type, inferred, cleaned, context);
 
   // Two passes. An oblast named in a line is usually *context* — "БпЛА на
@@ -437,6 +474,26 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
     if (CITY_WORD.test(bare)) return context.city ?? undefined;
     // "у напрямку Чорного моря", "з акваторії Азовського моря" — coarse, but a real
     // end of a real movement, and the only thing these lines give to draw with.
+    /*
+     * Enemy launch sites, checked only inside a launch report. Outside one these
+     * names are ordinary context ("реактивний на Гірськ з Брянської області" is a
+     * drone over Ukraine, not a marker in Russia), and the map is for Ukrainian
+     * airspace.
+     */
+    if (LAUNCH.test(rest)) {
+      const site = matchLaunchSite(bare) ?? matchLaunchSite(tail);
+      if (site) {
+        return {
+          name: site.name,
+          lat: site.lat,
+          lon: site.lon,
+          oblast: null,
+          kind: 'oblast',
+          confidence: 0.5,
+        };
+      }
+    }
+
     const water = matchWater(tail);
     if (water) {
       return {
