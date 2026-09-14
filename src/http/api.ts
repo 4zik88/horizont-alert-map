@@ -18,6 +18,8 @@ export interface MapTarget {
   type: string;
   count: number;
   label: string | null;
+  /** Oblast key, so the page can drop targets where the raid is over. */
+  oblast: string | null;
   lat: number;
   lon: number;
   fromLat: number | null;
@@ -90,7 +92,7 @@ function parseAreas(raw: string | undefined): string[] {
 }
 
 interface TargetRow {
-  id: number; type: string; count: number;
+  id: number; type: string; count: number; oblast: string | null;
   to_name: string | null; to_lat: number; to_lon: number;
   from_lat: number | null; from_lon: number | null;
   course_deg: number | null; relation: string; confidence: number; observed_at: number;
@@ -119,7 +121,7 @@ export class MapApi {
 
     // Only targets with a real position and enough confidence to be worth drawing.
     this.selectTargets = db.prepare(`
-      SELECT t.id, t.type, t.count, t.to_name, t.to_lat, t.to_lon,
+      SELECT t.id, t.type, t.count, t.oblast, t.to_name, t.to_lat, t.to_lon,
              t.from_lat, t.from_lon, t.course_deg, t.relation, t.confidence, t.observed_at
         FROM targets t
         JOIN messages m ON m.id = t.message_id
@@ -175,6 +177,7 @@ export class MapApi {
         type: r.type,
         count: r.count,
         label: r.to_name,
+        oblast: r.oblast,
         lat: r.to_lat,
         lon: r.to_lon,
         fromLat: r.from_lat,

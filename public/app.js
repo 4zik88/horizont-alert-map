@@ -318,13 +318,45 @@ function drawAlerts() {
   }).addTo(alertLayer);
 }
 
+/*
+ * Should this target still be drawn?
+ *
+ * An all-clear means the threat has left, so a marker that lingers for the rest of
+ * the window says something is overhead when it is not.
+ *
+ * Three rails, because the failure mode here is hiding a real target during a raid —
+ * far worse than showing a stale one:
+ *
+ *  1. Only when the alert feed actually answered. An empty `alerts` array means we
+ *     know nothing, not that the country is clear, and must hide nothing.
+ *  2. Only for an oblast explicitly reported clear. A target whose oblast we could
+ *     not determine stays on the map.
+ *  3. Never for a target younger than the grace period. These channels are routinely
+ *     faster than the official alert — those first minutes before the siren are the
+ *     most valuable thing this map shows, and gating them on an alert that has not
+ *     been declared yet would delete exactly the warning worth having.
+ */
+const ALERT_GRACE_MS = 5 * 60 * 1000;
+
+function silencedByAllClear(target, byOblast, now) {
+  if (!state.alerts || state.alerts.length === 0) return false;
+  if (!target.oblast) return false;
+  if (now - target.at < ALERT_GRACE_MS) return false;
+
+  const alert = byOblast.get(target.oblast);
+  return alert !== undefined && !alert.active;
+}
+
 function drawTargets() {
   targetLayer.clearLayers();
   if (!state) return;
 
   const now = Date.now();
+  const byOblast = new Map(state.alerts.map((a) => [a.oblast, a]));
 
   for (const t of state.targets) {
+    if (silencedByAllClear(t, byOblast, now)) continue;
+
     const spec = TYPES[t.type] || TYPES.unknown;
     const opacity = ageOpacity(t.at, now);
 
@@ -435,7 +467,12 @@ function drawStatus() {
   const now = Date.now();
 
   // Only count what is still live; the map keeps faded ones for context.
-  const live = state.targets.filter((t) => now - t.at < FADE_MS).length;
+  // Must apply the same all-clear rule as the map, or the count contradicts what the
+  // reader can actually see.
+  const byOblast = new Map(state.alerts.map((a) => [a.oblast, a]));
+  const live = state.targets.filter(
+    (t) => now - t.at < FADE_MS && !silencedByAllClear(t, byOblast, now),
+  ).length;
   el('count').textContent = String(live);
 
   const red = state.alerts.filter((a) => a.level === 'full').length;
