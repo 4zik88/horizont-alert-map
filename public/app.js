@@ -339,6 +339,69 @@ function drawAlerts() {
 const ALERT_GRACE_MS = 5 * 60 * 1000;
 
 /*
+ * Which raion a point falls in.
+ *
+ * The all-clear rule started at oblast granularity, which left drones drawn over
+ * quiet raions of an oblast that was under alert somewhere else entirely — visible on
+ * the map as markers sitting in unshaded territory. The polygons are already loaded
+ * for the shading, so the same geometry answers it properly.
+ *
+ * Bounding boxes are precomputed and the answer memoised per target: a redraw runs
+ * every 15 seconds over every target, and ray-casting 161 raions each time would not
+ * be free.
+ */
+let raionBoxes = null;
+const raionOfTarget = new Map();
+
+function indexRaions() {
+  raionBoxes = raions.features.map((f) => {
+    let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+    eachRing(f, (ring) => {
+      for (const [lon, lat] of ring) {
+        if (lat < minLat) minLat = lat;
+        if (lat > maxLat) maxLat = lat;
+        if (lon < minLon) minLon = lon;
+        if (lon > maxLon) maxLon = lon;
+      }
+    });
+    return { feature: f, minLat, maxLat, minLon, maxLon };
+  });
+}
+
+function eachRing(feature, fn) {
+  const g = feature.geometry;
+  if (!g) return;
+  if (g.type === 'Polygon') g.coordinates.forEach(fn);
+  else if (g.type === 'MultiPolygon') for (const poly of g.coordinates) poly.forEach(fn);
+}
+
+/** Ray casting; only the outer ring of each polygon is tested, which is enough here. */
+function inRing(lat, lon, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if ((yi > lat) !== (yj > lat) && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function raionAt(lat, lon) {
+  if (!raions) return undefined;
+  if (!raionBoxes) indexRaions();
+
+  for (const box of raionBoxes) {
+    if (lat < box.minLat || lat > box.maxLat || lon < box.minLon || lon > box.maxLon) continue;
+    let hit = false;
+    eachRing(box.feature, (ring) => { if (!hit && inRing(lat, lon, ring)) hit = true; });
+    if (hit) return box.feature.properties;
+  }
+  return undefined;
+}
+
+/*
  * Collapse repeated reports of the same target.
  *
  * Four channels cover the same sky, and one drone crossing an oblast is posted again
@@ -384,7 +447,140 @@ function silencedByAllClear(target, byOblast, now) {
   if (now - target.at < ALERT_GRACE_MS) return false;
 
   const alert = byOblast.get(target.oblast);
-  return alert !== undefined && !alert.active;
+  if (alert === undefined) return false;
+  if (!alert.active) return true;
+
+  /*
+   * The oblast is under alert, but perhaps not here. Hide a target sitting in a raion
+   * that is not one of the warned areas.
+   *
+   * Two guards. A raion we cannot locate is never hidden. And when none of an
+   * oblast's warned areas match a raion polygon — which happens when the warning is
+   * hromada- or city-level, as Dnipropetrovsk's Nikopol area usually is — the whole
+   * oblast falls back to "shown", or a legitimate alert would clear its own map.
+   */
+  if (!raions) return false;
+  let raion = raionOfTarget.get(target.id);
+  if (raion === undefined) {
+    raion = raionAt(target.lat, target.lon) ?? null;
+    raionOfTarget.set(target.id, raion);
+  }
+  if (!raion) return false;
+
+  const warned = alert.areas || [];
+  if (warned.length === 0) return false;
+
+  const anyRaionMatches = raionBoxes.some(
+    (b) => b.feature.properties.oblast === target.oblast
+      && warned.includes(b.feature.properties.match),
+  );
+  if (!anyRaionMatches) return false;
+
+  return !warned.includes(raion.match);
+}
+
+/*
+ * Cruise speeds, mirroring src/parser/targetTypes.ts. Used only to decide whether two
+ * sightings can be the same aircraft, so being roughly right is enough.
+ */
+const SPEED_KMH = {
+  uav: 180, jet_uav: 600, cruise: 800, ballistic: 3000,
+  kab: 700, aviation: 800, recon: 150, unknown: 200,
+};
+
+/** Beyond this gap two sightings are separate events, not one flight. */
+const TRACK_MAX_GAP_MS = 15 * 60 * 1000;
+/* Reports name a settlement, not a point, so allow slack for that plus a speed
+ * margin — a drone that detours reads as faster than its cruise speed. */
+const TRACK_SLACK_KM = 20;
+const TRACK_SPEED_MARGIN = 1.3;
+/*
+ * A flight does not double back. Without this, a jet UAV at 600 km/h can reach
+ * anywhere in an oblast inside the time window, so distance alone chained unrelated
+ * drones into one zigzag: Радомишль → Житомир → Тетіїв → Погребище was three
+ * aircraft drawn as one itinerary going nowhere.
+ *
+ * 90 degrees was chosen by comparing thresholds against an hour of live traffic:
+ * 60 and 75 fragmented real flights (longest track 3 and 5 points), 100 let a 123 km
+ * leg back through. At 90 the flight count is the same as 100 and the worst leg drops
+ * to 67 km.
+ */
+const TRACK_MAX_TURN_DEG = 90;
+
+/** Initial bearing between two points, degrees, 0 = north. */
+function bearingBetween(lat1, lon1, lat2, lon2) {
+  const rad = Math.PI / 180;
+  const f1 = lat1 * rad;
+  const f2 = lat2 * rad;
+  const dLon = (lon2 - lon1) * rad;
+  const y = Math.sin(dLon) * Math.cos(f2);
+  const x = Math.cos(f1) * Math.sin(f2) - Math.sin(f1) * Math.cos(f2) * Math.cos(dLon);
+  return (Math.atan2(y, x) / rad + 360) % 360;
+}
+
+function turnDeg(a, b) {
+  const d = Math.abs(((a - b) % 360 + 360) % 360);
+  return d > 180 ? 360 - d : d;
+}
+
+/*
+ * Join successive sightings of the same aircraft into one track.
+ *
+ * Position dedupe alone was not enough: a drone crossing Vinnytsia oblast is reported
+ * at six different towns as it goes, so it became six markers and the header said
+ * "13 цілей" when three aircraft were in the air. That over-counts the threat and
+ * hides the one thing worth knowing — where it is going.
+ *
+ * A sighting joins the most recent open track of the same type whose last point it
+ * could plausibly have reached: within the time gap, and within cruise speed times
+ * elapsed plus slack. Nothing else links them — these messages carry no aircraft id —
+ * so this is a heuristic, and two drones flying the same corridor minutes apart can
+ * merge. That is a better failure than the current one: it under-counts rather than
+ * multiplying one aircraft into six.
+ */
+function buildTracks(targets) {
+  const sorted = [...targets].sort((a, b) => a.at - b.at);
+  const tracks = [];
+
+  for (const t of sorted) {
+    const speed = SPEED_KMH[t.type] ?? SPEED_KMH.unknown;
+    let best;
+    let bestKm = Infinity;
+
+    for (const track of tracks) {
+      if (track.type !== t.type) continue;
+      const last = track.points[track.points.length - 1];
+      const gapMs = t.at - last.at;
+      if (gapMs < 0 || gapMs > TRACK_MAX_GAP_MS) continue;
+
+      const km = distanceKm(last.lat, last.lon, t.lat, t.lon);
+      const reach = (speed * TRACK_SPEED_MARGIN * gapMs) / 3_600_000 + TRACK_SLACK_KM;
+      if (km > reach || km >= bestKm) continue;
+
+      // Established heading must roughly continue: no doubling back.
+      if (track.points.length > 1) {
+        const prev = track.points[track.points.length - 2];
+        const legIn = bearingBetween(prev.lat, prev.lon, last.lat, last.lon);
+        const legOut = bearingBetween(last.lat, last.lon, t.lat, t.lon);
+        if (km > 1 && turnDeg(legIn, legOut) > TRACK_MAX_TURN_DEG) continue;
+      }
+
+      best = track;
+      bestKm = km;
+    }
+
+    if (best) {
+      best.points.push(t);
+      // The count of a flight is the most anyone reported in it, never the sum.
+      best.count = Math.max(best.count, t.count);
+    } else {
+      tracks.push({ type: t.type, points: [t], count: t.count });
+    }
+  }
+
+  // Head is the newest sighting: where the aircraft was last seen.
+  for (const track of tracks) track.head = track.points[track.points.length - 1];
+  return tracks;
 }
 
 function drawTargets() {
@@ -394,8 +590,38 @@ function drawTargets() {
   const now = Date.now();
   const byOblast = new Map(state.alerts.map((a) => [a.oblast, a]));
 
-  for (const t of dedupeTargets(state.targets)) {
-    if (silencedByAllClear(t, byOblast, now)) continue;
+  const visible = dedupeTargets(state.targets)
+    .filter((t) => !silencedByAllClear(t, byOblast, now));
+
+  for (const track of buildTracks(visible)) {
+    const t = { ...track.head, count: track.count, reports: track.points.length };
+
+    /*
+     * The path so far. Without it a flight reported at six towns reads as six
+     * aircraft; with it, it reads as one thing going somewhere — which is the
+     * question anyone looking at this map is actually asking.
+     */
+    if (track.points.length > 1) {
+      const spec = TYPES[track.type] || TYPES.unknown;
+      L.polyline(track.points.map((p) => [p.lat, p.lon]), {
+        color: spec.color,
+        weight: 2,
+        opacity: ageOpacity(t.at, now) * 0.55,
+        interactive: false,
+      }).addTo(targetLayer);
+
+      // Small dots where it was, so the head is unmistakably the current position.
+      for (const p of track.points.slice(0, -1)) {
+        L.circleMarker([p.lat, p.lon], {
+          radius: 2.5,
+          color: spec.color,
+          weight: 0,
+          fillColor: spec.color,
+          fillOpacity: ageOpacity(p.at, now) * 0.5,
+          interactive: false,
+        }).addTo(targetLayer);
+      }
+    }
 
     const spec = TYPES[t.type] || TYPES.unknown;
     const opacity = ageOpacity(t.at, now);
@@ -413,7 +639,7 @@ function drawTargets() {
       `<strong>${spec.label}${t.count > 1 ? ' ×' + t.count : ''}</strong><br>` +
       (t.label ? escapeHtml(t.label) + '<br>' : '') +
       `<span class="muted">${minutesAgo(t.at, now)} тому</span>` +
-      (t.reports > 1 ? `<span class="muted"> · ${t.reports} повідомлення</span>` : '') +
+      (t.reports > 1 ? `<span class="muted"> · ${t.reports} відміток на маршруті</span>` : '') +
       (near !== null ? `<br><span class="muted">~${near} км від вас</span>` : ''),
     );
 
@@ -511,9 +737,10 @@ function drawStatus() {
   // Must apply the same all-clear rule as the map, or the count contradicts what the
   // reader can actually see.
   const byOblast = new Map(state.alerts.map((a) => [a.oblast, a]));
-  const live = dedupeTargets(state.targets).filter(
-    (t) => now - t.at < FADE_MS && !silencedByAllClear(t, byOblast, now),
-  ).length;
+  // Count aircraft, not sightings: the header said "13 цілей" for three drones.
+  const live = buildTracks(
+    dedupeTargets(state.targets).filter((t) => !silencedByAllClear(t, byOblast, now)),
+  ).filter((track) => now - track.head.at < FADE_MS).length;
   el('count').textContent = String(live);
 
   const red = state.alerts.filter((a) => a.level === 'full').length;
