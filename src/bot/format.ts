@@ -17,6 +17,22 @@ export function typeLabel(type: TargetType): string {
   return TYPE_LABELS[type] ?? TYPE_LABELS.unknown;
 }
 
+/**
+ * Escape a value interpolated into an HTML-parsed message.
+ *
+ * Every send uses `parse_mode: 'HTML'` so the fixed copy can carry <b> tags. Telegram
+ * rejects the *whole* message with 400 if the markup does not parse, which means one
+ * settlement name containing `&` or `<` would silently drop the entire warning for
+ * that user — the batch, not just the line. No gazetteer name contains those today,
+ * but the names come from OSM and the channels, and neither is ours to guarantee.
+ */
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 export interface AlertLine {
   type: TargetType;
   count: number;
@@ -28,10 +44,11 @@ export interface AlertLine {
 /** "⚠️ БпЛА, курс на Охтирка, ~23 км від вас" — the format the spec specified. */
 export function formatAlertLine(line: AlertLine): string {
   const count = line.count > 1 ? ` ×${line.count}` : '';
-  const where = line.toName
+  const name = line.toName === null ? null : escapeHtml(line.toName);
+  const where = name
     ? line.reason === 'in_radius'
-      ? `район ${line.toName}`
-      : `курс на ${line.toName}`
+      ? `район ${name}`
+      : `курс на ${name}`
     : line.reason === 'in_radius'
       ? 'поруч із вами'
       : 'курс у ваш бік';

@@ -4,7 +4,7 @@ import { oblastByKey } from '../parser/oblasts.js';
 import { AppState, Users, DEFAULT_RADIUS_KM, MAX_RADIUS_KM, MIN_RADIUS_KM } from '../db/users.js';
 import { TelegramApi, trySend, type TelegramMessage, type TelegramUpdate } from './api.js';
 import { isAllowed } from './access.js';
-import { HELP } from './format.js';
+import { HELP, escapeHtml } from './format.js';
 
 const OFFSET_KEY = 'telegram_offset';
 
@@ -159,7 +159,7 @@ export class Bot {
 
     // Never echo the coordinates back — they would then sit in Telegram's history and
     // in any screenshot of the chat.
-    const where = oblast ? ` (${oblast} обл.)` : '';
+    const where = oblast ? ` (${escapeHtml(oblast)} обл.)` : '';
     const mode = live ? 'Live-локацію прийнято, оновлюватиму автоматично.' : 'Локацію збережено.';
     await trySend(
       this.api,
@@ -201,7 +201,10 @@ export class Bot {
     } else {
       const oblast = user.oblast ? oblastByKey(user.oblast)?.name : undefined;
       const live = user.location_kind === 'live' && (user.live_until ?? 0) > Date.now();
-      lines.push(`Локація: ${live ? 'live, оновлюється' : 'збережена'}${oblast ? `, ${oblast} обл.` : ''}`);
+      lines.push(
+        `Локація: ${live ? 'live, оновлюється' : 'збережена'}` +
+          `${oblast ? `, ${escapeHtml(oblast)} обл.` : ''}`,
+      );
     }
 
     return lines.join('\n');

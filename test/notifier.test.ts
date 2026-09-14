@@ -3,7 +3,7 @@ import { test, describe, beforeEach } from 'node:test';
 import { AppState, Users } from '../src/db/users.js';
 import { Notifier, DEFAULT_NOTIFIER } from '../src/notify/notifier.js';
 import type { TelegramApi } from '../src/bot/api.js';
-import { formatAlertBatch, type AlertLine } from '../src/bot/format.js';
+import { escapeHtml, formatAlertBatch, type AlertLine } from '../src/bot/format.js';
 import { memoryDb } from './helpers.js';
 
 const NOW = 1_700_000_000_000;
@@ -216,5 +216,29 @@ describe('formatAlertBatch', () => {
   test('keeps the largest reported count', () => {
     const text = formatAlertBatch([line({ count: 1 }), line({ count: 3, distanceKm: 25 })]);
     assert.match(text, /×3/);
+  });
+});
+
+describe('formatAlertLine — HTML safety', () => {
+  /*
+   * Every send uses parse_mode HTML, and Telegram rejects the whole message with 400
+   * if the markup does not parse. An unescaped name would therefore drop the entire
+   * warning for that user, not just the line naming the place.
+   */
+  test('escapes a place name so one bad character cannot drop the warning', () => {
+    const line: AlertLine = {
+      type: 'uav',
+      count: 1,
+      toName: 'Ново<b>Село & Co',
+      distanceKm: 12,
+      reason: 'in_radius',
+    };
+    const text = formatAlertBatch([line]);
+    assert.ok(!/<b>/.test(text), 'raw tag survived into the message');
+    assert.match(text, /Ново&lt;b&gt;Село &amp; Co/);
+  });
+
+  test('leaves ordinary names untouched', () => {
+    assert.equal(escapeHtml("Кам'янець-Подільський"), "Кам'янець-Подільський");
   });
 });
