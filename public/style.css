@@ -262,3 +262,22 @@ body.sheet-open .leaflet-control-attribution {
 .leaflet-control-attribution a { color: var(--muted) !important; }
 
 .nojs { position: absolute; inset: 0; display: grid; place-items: center; z-index: 900; }
+
+/* Credit, at the foot of the feed: present without competing with the reports above
+   it, and only reachable once the reader has scrolled past what matters. */
+.about {
+  list-style: none;
+  padding: 14px 16px 22px;
+  border-top: 1px solid #21262d;
+  color: #6e7681;
+  font-size: 11.5px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.about a {
+  color: #58a6ff;
+  text-decoration: none;
+}
+
+.about a:hover { text-decoration: underline; }

@@ -24,6 +24,17 @@ const LAUNCH_FADE_MS = 60 * 60 * 1000;
 const REDRAW_MS = 15000;        // re-age markers without refetching
 
 /*
+ * Credit, appended to the feed rather than placed after it.
+ *
+ * `#feed` is the element that scrolls, not `#sheet`, so a sibling footer sat below
+ * the sheet's visible area and could never be reached — present in the DOM and
+ * invisible to every reader. Inside the list it scrolls with the messages.
+ */
+const ABOUT =
+  '<li class="about">Horizont — приватний монітор повітряних цілей.<br>' +
+  'Розробка — <a href="https://t.me/f0zik" target="_blank" rel="noopener noreferrer">@f0zik</a></li>';
+
+/*
  * Target iconography.
  *
  * Every silhouette is drawn nose-up in a 24x24 box, so rotating by the course in
@@ -426,7 +437,7 @@ function drawFeed() {
       <div class="feed-meta"><span>@${escapeHtml(item.channel)}</span><span>${minutesAgo(item.at, now)}</span></div>
       <div class="${cls}">${escapeHtml(item.text)}</div>
     </li>`;
-  }).join('');
+  }).join('') + ABOUT;
 }
 
 function drawStatus() {
