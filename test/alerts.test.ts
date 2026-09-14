@@ -90,11 +90,42 @@ describe('parseSitrep — the public alerts.in.ua report', () => {
 
   test('reads the oblasts actually under an air-raid alert', () => {
     const state = parseSitrep(md);
-    const red = [...state.levels].filter(([, v]) => v === 'full').map(([k]) => k).sort();
-    assert.deepEqual(red, [
+    const active = [...state.levels].filter(([, v]) => isActive(v)).map(([k]) => k).sort();
+    assert.deepEqual(active, [
       'chernihivska', 'dnipropetrovska', 'donetska', 'kharkivska',
       'khersonska', 'mykolaivska', 'sumska', 'zaporizka',
     ]);
+  });
+
+  /*
+   * Red is oblast-wide coverage, not threat type. Donetsk names all 8 of its raions
+   * and Zaporizhzhia all 5, so both are red; Sumy names 1 raion of 5 and Chernihiv 2
+   * of 5, so they are the yellow level. Reading "air raid alert" as red painted every
+   * one of these solid red while the reference map showed most of them yellow.
+   */
+  test('separates the red level from the yellow one by raion coverage', () => {
+    const state = parseSitrep(md);
+    const red = [...state.levels].filter(([, v]) => v === 'full').map(([k]) => k).sort();
+    assert.deepEqual(red, ['donetska', 'zaporizka']);
+
+    assert.equal(state.levels.get('sumska'), 'partial');
+    assert.equal(state.levels.get('chernihivska'), 'partial');
+    // 4 raions of 7 named, the rest hromadas and the city.
+    assert.equal(state.levels.get('kharkivska'), 'partial');
+  });
+
+  /*
+   * A shelling threat with no declared air raid alert is not an air raid. The
+   * reference map marks it with a point icon and leaves the oblast unfilled; we used
+   * to tint the whole oblast yellow for it.
+   */
+  test('ignores a threat that is not a declared air-raid alert', () => {
+    const threatOnly = md.replace(
+      '**Sumska oblast (Сумська область)** — air raid alert in effect',
+      '**Sumska oblast (Сумська область)** — artillery shelling threat in effect',
+    );
+    assert.equal(parseSitrep(threatOnly).levels.get('sumska'), 'none');
+    assert.deepEqual(parseSitrep(threatOnly).areas.get('sumska'), undefined);
   });
 
   /*

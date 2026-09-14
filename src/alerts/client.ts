@@ -109,6 +109,12 @@ UKR_NAME_TO_KEY.set('м. Київ', 'kyiv');
 UKR_NAME_TO_KEY.set('Київ', 'kyiv');
 UKR_NAME_TO_KEY.set('Автономна Республіка Крим', 'krym');
 
+/** Raion names are masculine adjectives; hromadas are feminine, cities are bare. */
+const RAION_NAME = /ий$/u;
+
+/** How many raions each oblast has — the denominator for oblast-wide coverage. */
+const OBLAST_RAIONS = new Map(OBLASTS.map((o) => [o.key, o.raions]));
+
 /**
  * Parse the situation report.
  *
@@ -145,25 +151,48 @@ export function parseSitrep(markdown: string): AlertState {
     const key = UKR_NAME_TO_KEY.get(named[1]!.trim());
     if (!key) continue;
 
-    // Red is a declared air-raid alert; yellow is a threat without one.
     const description = named[2]!.toLowerCase();
-    levels.set(key, description.includes('air raid alert') ? 'full' : 'partial');
 
     // "7 areas affected: Lypetska (Липецька), Iziumskyi (Ізюмський), ..." — the
     // Ukrainian name in brackets is what the raion polygons are keyed by.
     // Not `[^.]*`: the list itself contains periods ("m. Kharkiv (м. Харків)"),
     // which truncated it after the first entry. Take the rest of the line instead.
     const affected = /areas? affected:(.*)$/i.exec(trimmed);
+    const names: string[] = [];
     if (affected) {
-      const names: string[] = [];
       for (const bracket of affected[1]!.matchAll(/\(([^)]+)\)/g)) {
         const raw = bracket[1]!.trim();
         // Skip the English-transliteration duplicates and hromada markers.
         if (!/[\u0400-\u04FF]/.test(raw)) continue;
         names.push(normaliseArea(raw));
       }
-      if (names.length > 0) areas.set(key, [...new Set(names)]);
     }
+    const unique = [...new Set(names)];
+
+    /*
+     * An artillery or street-fighting threat with no declared air raid alert is not
+     * an air raid. The reference map marks those with a point icon and leaves the
+     * oblast unfilled; tinting a whole oblast because one hromada is under a
+     * shelling threat was the most over-broad thing on our map.
+     */
+    if (!description.includes('air raid alert')) continue;
+
+    if (unique.length > 0) areas.set(key, unique);
+
+    /*
+     * Red versus yellow is *coverage*, not threat type — the same distinction the
+     * tokened alerts.in.ua feed encodes as 'A' (oblast-wide) and 'P' (partial).
+     * An alert naming every raion of the oblast is oblast-wide and red; one naming
+     * a few raions or only hromadas is the yellow level. Reading it as "air raid
+     * alert = red" painted Sumy and Odesa red while the reference showed yellow.
+     *
+     * Raion-level names are the masculine adjectival ones ("Сумський"); hromadas
+     * are feminine ("Липецька") and cities come through as bare settlement names,
+     * and neither counts toward oblast-wide coverage.
+     */
+    const raionsUnderAlert = unique.filter((name) => RAION_NAME.test(name)).length;
+    const total = OBLAST_RAIONS.get(key) ?? 0;
+    levels.set(key, total > 0 && raionsUnderAlert >= total ? 'full' : 'partial');
   }
 
   const activity = /## 4\. THREAT ACTIVITY([\s\S]*?)(?=\n## )/.exec(markdown);
