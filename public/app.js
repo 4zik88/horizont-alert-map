@@ -141,9 +141,10 @@ function launchIcon(spec, count) {
  */
 const POSITION_RELATIONS = new Set(['over', 'past', 'through']);
 
-function targetIcon(spec, course, count, relation) {
+function targetIcon(spec, course, count, relation, rel) {
   const rotation = course === null ? 0 : course;
   const heading = !POSITION_RELATIONS.has(relation);
+  const tier = TIER[rel?.tier ?? 'mid'];
 
   // Unknown heading is drawn upright in a dashed ring rather than pointed north.
   const ring = course === null
@@ -157,14 +158,26 @@ function targetIcon(spec, course, count, relation) {
    * what kind of thing is coming, the outline says it has not arrived. A filled
    * silhouette is reserved for a reported position.
    */
-  const cls = heading ? 'tgt-mark heading' : 'tgt-mark';
-  const label = heading ? `→ ${spec.short}` : spec.short;
+  const cls = `tgt-mark${heading ? ' heading' : ''} t-${rel?.tier ?? 'mid'}`;
+
+  /*
+   * The near label carries the number worth reading. Distance answers "where", the
+   * minutes answer "how long have I got" — and the minutes are shown only when the
+   * thing is actually pointed at you, or they would be a guess dressed as a fact.
+   */
+  let label = heading ? `→ ${spec.short}` : spec.short;
+  if (rel?.tier === 'near' && rel.km !== null) {
+    label += rel.approaching
+      ? ` · ${Math.round(rel.etaMin)} хв`
+      : ` · ${Math.round(rel.km)} км`;
+  }
 
   return L.divIcon({
     className: 'tgt',
     html:
-      `<span class="${cls}" style="--c:${spec.color}">` +
-      `<svg viewBox="0 0 24 24" width="26" height="26" style="transform:rotate(${rotation}deg)">` +
+      `<span class="${cls}" style="--c:${spec.color};--s:${tier.size}px">` +
+      `<svg viewBox="0 0 24 24" width="${tier.size}" height="${tier.size}" ` +
+      `style="transform:rotate(${rotation}deg)">` +
       `${ring}<path d="${spec.path}"/></svg>` +
       `<em>${label}</em>${badge}</span>`,
     iconSize: [0, 0],
@@ -192,10 +205,21 @@ L.tileLayer(TILES.tileUrl || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
 }).addTo(map);
 
 function applyZoomClass() {
-  // Labels are hidden only at the far-out zooms where dozens would overlap.
-  document.body.classList.toggle('zoomed-out', map.getZoom() < 6);
+  /*
+   * Three states, not one switch. The old rule hid labels below zoom 6 — but the
+   * default view *is* zoom 6, so labels were always on at the view everyone opens,
+   * which is the view that was unreadable.
+   */
+  const z = map.getZoom();
+  document.body.dataset.zoom = z <= 6 ? 'country' : z <= 7 ? 'region' : 'local';
 }
-map.on('zoomend', applyZoomClass);
+map.on('zoomend', () => {
+  applyZoomClass();
+  // Clustering and the tail rules read the zoom, so a zoom change must redraw —
+  // relabelling alone would leave clusters from the previous zoom on screen.
+  drawTargets();
+  drawLaunches();
+});
 applyZoomClass();
 
 const alertLayer = L.layerGroup().addTo(map);
@@ -274,10 +298,20 @@ const escapeHtml = (s) => s.replace(/[&<>"]/g, (c) =>
  * and the level is still in the data for anyone who wants it.
  */
 const ALERT_RED = '#f85149';
+/*
+ * A wash, not a flood. At 0.20 the fill covered half the country during a raid and
+ * the targets — the thing you actually look for — disappeared into it. With the fill
+ * this faint the edge has to carry the shape, so the stroke gets heavier as the fill
+ * gets lighter.
+ *
+ * The quiet-oblast outline stays, because the dark basemap gives little else to
+ * navigate by, but demoted hard: 24 grey polygons were competing with the alert
+ * edges before a single alert existed.
+ */
 const PAINT = {
-  full:    { color: ALERT_RED, fill: ALERT_RED, fillOpacity: 0.20, weight: 1.4, opacity: 0.9 },
-  partial: { color: ALERT_RED, fill: ALERT_RED, fillOpacity: 0.18, weight: 1.3, opacity: 0.85 },
-  none:    { color: '#30363d', fill: ALERT_RED, fillOpacity: 0,    weight: 0.7, opacity: 0.3 },
+  full:    { color: ALERT_RED, fill: ALERT_RED, fillOpacity: 0.06, weight: 1.6, opacity: 0.8 },
+  partial: { color: ALERT_RED, fill: ALERT_RED, fillOpacity: 0.05, weight: 1.5, opacity: 0.75 },
+  none:    { color: '#30363d', fill: ALERT_RED, fillOpacity: 0,    weight: 0.5, opacity: 0.10 },
 };
 
 /*
@@ -338,10 +372,10 @@ function drawAlerts() {
       return {
         color: active ? paint.color : PAINT.none.color,
         weight: active ? 1.2 : 0.6,
-        opacity: active ? 0.7 : 0.28,
+        opacity: active ? 0.7 : 0.10,
         fillColor: paint.fill,
         // Fill only when nothing finer was available for this oblast.
-        fillOpacity: active && !precise ? 0.1 : 0,
+        fillOpacity: active && !precise ? 0.05 : 0,
         interactive: false,
       };
     },
@@ -613,34 +647,263 @@ function buildTracks(targets) {
   return tracks;
 }
 
+/*
+ * How relevant is this flight to the reader?
+ *
+ * The rules deliberately mirror src/notify/proximity.ts — radius, a 30-degree course
+ * corridor and a 25-minute lead. What the map calls "поруч" is then exactly what
+ * makes the phone buzz, and that consistency is worth more than any tuning: a map
+ * that disagrees with the alert you just received is worse than either alone.
+ *
+ * Distance alone would not do. Measured over an hour of live traffic, a 50 km radius
+ * held 1 target of 65 while "within 10 minutes" held 7, so a distance-only near tier
+ * would almost never fire. Time-to-reach also ranks correctly across types: a jet UAV
+ * 60 km out is 6 minutes away, an ordinary Shahed at the same distance is 20.
+ */
+const COURSE_TOLERANCE_DEG = 30;
+const LEAD_MINUTES = 25;
+const MID_LEAD_MINUTES = 60;
+const MID_RADIUS_FACTOR = 3;
+
+const TIER = {
+  near: { size: 34, dim: 1, rank: 0, z: 900 },
+  mid: { size: 26, dim: 0.9, rank: 1, z: 500 },
+  far: { size: 18, dim: 0.65, rank: 2, z: 100 },
+};
+
+/** The flight's heading, strongest evidence first. */
+function headingOf(track) {
+  const points = track.points;
+  if (points.length > 1) {
+    const a = points[points.length - 2];
+    const b = track.head;
+    if (distanceKm(a.lat, a.lon, b.lat, b.lon) > 1) {
+      return bearingBetween(a.lat, a.lon, b.lat, b.lon);
+    }
+  }
+  if (track.head.course !== null) return track.head.course;
+  if (track.head.fromLat !== null && track.head.fromLon !== null) {
+    return bearingBetween(track.head.fromLat, track.head.fromLon, track.head.lat, track.head.lon);
+  }
+  return null;
+}
+
+function relevanceOf(track, from, radiusKm, now) {
+  // No geolocation: one uniform weight. The map must not look broken, or empty,
+  // because the reader declined a permission.
+  if (!from) return { tier: 'mid', km: null, etaMin: null, approaching: false };
+
+  /*
+   * Nearest of the two known points, same as the bot's positionOf: a target may have
+   * a reported position and a destination, and the closer one is what concerns you.
+   */
+  const head = track.head;
+  let km = distanceKm(from.lat, from.lon, head.lat, head.lon);
+  if (head.fromLat !== null && head.fromLon !== null) {
+    km = Math.min(km, distanceKm(from.lat, from.lon, head.fromLat, head.fromLon));
+  }
+
+  const heading = headingOf(track);
+  const bearingToMe = bearingBetween(head.lat, head.lon, from.lat, from.lon);
+  const approaching = heading !== null
+    && turnDeg(bearingToMe, heading) <= COURSE_TOLERANCE_DEG;
+  const etaMin = (km / (SPEED_KMH[track.type] || SPEED_KMH.unknown)) * 60;
+
+  let tier;
+  if (km <= radiusKm || (approaching && etaMin <= LEAD_MINUTES)) tier = 'near';
+  else if (km <= radiusKm * MID_RADIUS_FACTOR || (approaching && etaMin <= MID_LEAD_MINUTES)) tier = 'mid';
+  else tier = 'far';
+
+  /*
+   * A report younger than the grace period is never demoted to far. These channels
+   * are routinely ahead of the official siren, and those first minutes are the most
+   * valuable thing this map shows — burying them in a cluster would throw away
+   * exactly what the all-clear rule goes out of its way to protect.
+   */
+  if (now - head.at < ALERT_GRACE_MS && tier === 'far') tier = 'mid';
+
+  return { tier, km, etaMin, approaching };
+}
+
+/*
+ * One pipeline, read by both the map and the header.
+ *
+ * They used to run it separately and then apply different freshness rules, which is
+ * why the header said 14 while 21 markers were drawn. Sharing it makes them agree by
+ * construction rather than by coincidence.
+ */
+function liveTracks(now) {
+  if (!state) return [];
+
+  const byOblast = new Map(state.alerts.map((a) => [a.oblast, a]));
+  const visible = dedupeTargets(state.targets)
+    .filter((t) => !silencedByAllClear(t, byOblast, now));
+
+  return buildTracks(visible)
+    // The head is what the marker shows; a flight whose newest sighting has aged out
+    // is over. Its older points may legitimately be 45 minutes old.
+    .filter((track) => now - track.head.at < FADE_MS)
+    .map((track) => ({ ...track, rel: relevanceOf(track, me, radiusKm, now) }))
+    .sort((a, b) => TIER[a.rel.tier].rank - TIER[b.rel.tier].rank);
+}
+
+/*
+ * Grid clustering for distant flights, without a library — leaflet.markercluster
+ * needs a bundler and this client is deliberately one file the browser runs as-is.
+ *
+ * Bucketed in world-pixel space via `map.project(latlng, zoom)`, which is independent
+ * of panning, so membership changes only on zoom. `latLngToLayerPoint` would be
+ * pan-dependent and make markers hop while dragging; a degree grid would over-cluster
+ * at high zoom and distort with latitude. Both are easy to "simplify" into by
+ * accident, hence this note.
+ *
+ * Honest about its worth: buildTracks already does the heavy collapsing, so at
+ * today's density most cells hold one flight and this changes nothing. It exists for
+ * the night 200 targets are up, which is when the map has to stay readable.
+ */
+const CLUSTER_CELL_PX = 44;
+const CLUSTER_MAX_ZOOM = 7;
+
+/** Threat order, for colouring a mixed cell by its worst member. */
+const THREAT_ORDER = ['ballistic', 'cruise', 'kab', 'jet_uav', 'aviation', 'uav', 'recon', 'unknown'];
+
+function clusterIcon(members) {
+  const worst = members.reduce((a, b) =>
+    THREAT_ORDER.indexOf(b.type) < THREAT_ORDER.indexOf(a.type) ? b : a);
+  const spec = TYPES[worst.type] || TYPES.unknown;
+  const count = members.reduce((n, t) => n + t.count, 0);
+  const size = count >= 10 ? 40 : count >= 5 ? 34 : 28;
+
+  /*
+   * Always a number, never a bare dot: shape carries the type distinction on this map,
+   * so a cluster that shows neither shape nor count says nothing at all.
+   *
+   * The chevron restores the one thing clustering destroys — whether the blob is
+   * coming your way — and is drawn only when the members actually agree on a heading.
+   */
+  const bearings = members.map(headingOf).filter((b) => b !== null);
+  let chevron = '';
+  if (bearings.length >= Math.ceil(members.length * 0.6)) {
+    const mean = meanBearing(bearings);
+    if (bearings.every((b) => turnDeg(b, mean) <= 45)) {
+      chevron = `<i style="transform:rotate(${mean}deg)"></i>`;
+    }
+  }
+
+  return L.divIcon({
+    className: 'cluster-wrap',
+    html: `<span class="tgt-cluster" style="--c:${spec.color};--s:${size}px">${count}${chevron}</span>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+  });
+}
+
+/** Circular mean of bearings in degrees. */
+function meanBearing(bearings) {
+  const rad = Math.PI / 180;
+  let x = 0;
+  let y = 0;
+  for (const b of bearings) {
+    x += Math.cos(b * rad);
+    y += Math.sin(b * rad);
+  }
+  return (Math.atan2(y, x) / rad + 360) % 360;
+}
+
 function drawTargets() {
   targetLayer.clearLayers();
   if (!state) return;
 
   const now = Date.now();
-  const byOblast = new Map(state.alerts.map((a) => [a.oblast, a]));
+  const zoom = map.getZoom();
+  const clustering = zoom <= CLUSTER_MAX_ZOOM;
 
-  const visible = dedupeTargets(state.targets)
-    .filter((t) => !silencedByAllClear(t, byOblast, now));
+  const buckets = new Map();
+  const solo = [];
 
-  for (const track of buildTracks(visible)) {
-    const t = { ...track.head, count: track.count, reports: track.points.length };
-
+  for (const track of liveTracks(now)) {
     /*
-     * The path so far. Without it a flight reported at six towns reads as six
-     * aircraft; with it, it reads as one thing going somewhere — which is the
-     * question anyone looking at this map is actually asking.
+     * Never clustered: anything near you, and anything reported in the last few
+     * minutes. The second rule matters most — it is the same window the all-clear
+     * rule protects, for the same reason.
      */
-    if (track.points.length > 1) {
-      const spec = TYPES[track.type] || TYPES.unknown;
-      L.polyline(track.points.map((p) => [p.lat, p.lon]), {
-        color: spec.color,
-        weight: 2,
-        opacity: ageOpacity(t.at, now) * 0.55,
-        interactive: false,
-      }).addTo(targetLayer);
+    const pinned = track.rel.tier === 'near' || now - track.head.at < ALERT_GRACE_MS;
 
-      // Small dots where it was, so the head is unmistakably the current position.
+    if (!clustering || pinned) {
+      solo.push(track);
+      continue;
+    }
+
+    const p = map.project([track.head.lat, track.head.lon], zoom);
+    const key = `${Math.floor(p.x / CLUSTER_CELL_PX)}:${Math.floor(p.y / CLUSTER_CELL_PX)}`;
+    const group = buckets.get(key);
+    if (group) group.push(track);
+    else buckets.set(key, [track]);
+  }
+
+  for (const members of buckets.values()) {
+    // A chip reading "1" is strictly worse than the silhouette it replaced.
+    if (members.length === 1) solo.push(members[0]);
+    else drawCluster(members, now);
+  }
+
+  for (const track of solo) drawTrack(track, now, zoom);
+}
+
+function drawCluster(members, now) {
+  const lat = members.reduce((n, t) => n + t.head.lat, 0) / members.length;
+  const lon = members.reduce((n, t) => n + t.head.lon, 0) / members.length;
+  const newest = Math.max(...members.map((t) => t.head.at));
+
+  const counts = new Map();
+  for (const t of members) {
+    const spec = TYPES[t.type] || TYPES.unknown;
+    counts.set(spec.short, (counts.get(spec.short) ?? 0) + t.count);
+  }
+  const breakdown = [...counts].map(([name, n]) => `${n} × ${name}`).join(', ');
+  const near = me ? Math.round(Math.min(...members.map(
+    (t) => distanceKm(me.lat, me.lon, t.head.lat, t.head.lon)))) : null;
+
+  L.marker([lat, lon], {
+    icon: clusterIcon(members),
+    opacity: ageOpacity(newest, now),
+    zIndexOffset: 300,
+  })
+    .bindPopup(
+      `<strong>${members.length} цілей</strong><br>${escapeHtml(breakdown)}<br>` +
+      `<span class="muted">найсвіжіша ${minutesAgo(newest, now)} тому</span>` +
+      (near !== null ? `<br><span class="muted">~${near} км від вас</span>` : ''),
+    )
+    .on('click', (e) => {
+      const bounds = L.latLngBounds(members.map((t) => [t.head.lat, t.head.lon]));
+      map.flyToBounds(bounds.pad(0.25), { maxZoom: 9 });
+      e.target.closePopup();
+    })
+    .addTo(targetLayer);
+}
+
+function drawTrack(track, now, zoom) {
+  const t = { ...track.head, count: track.count, reports: track.points.length };
+  const spec = TYPES[track.type] || TYPES.unknown;
+  const tier = TIER[track.rel.tier];
+  const opacity = ageOpacity(t.at, now) * tier.dim;
+
+  /*
+   * The path so far. Without it a flight reported at six towns reads as six aircraft;
+   * with it, it reads as one thing going somewhere. Suppressed for far flights at
+   * country zoom, where a dozen tails become spaghetti and say nothing.
+   */
+  const showTail = track.points.length > 1 && (track.rel.tier !== 'far' || zoom >= 8);
+  if (showTail) {
+    L.polyline(track.points.map((p) => [p.lat, p.lon]), {
+      color: spec.color,
+      weight: tier.rank === 0 ? 2.5 : 2,
+      opacity: opacity * 0.55,
+      interactive: false,
+    }).addTo(targetLayer);
+
+    // Small dots where it was, so the head is unmistakably the current position.
+    if (zoom >= 7) {
       for (const p of track.points.slice(0, -1)) {
         L.circleMarker([p.lat, p.lon], {
           radius: 2.5,
@@ -652,48 +915,54 @@ function drawTargets() {
         }).addTo(targetLayer);
       }
     }
+  }
 
-    const spec = TYPES[t.type] || TYPES.unknown;
-    const opacity = ageOpacity(t.at, now);
+  const marker = L.marker([t.lat, t.lon], {
+    icon: targetIcon(spec, t.course, t.count, t.relation, track.rel),
+    opacity,
+    riseOnHover: true,
+    // Tier first, then recency within it: a near flight is never buried under a far one.
+    zIndexOffset: tier.z + Math.round(opacity * 80),
+  });
 
-    const marker = L.marker([t.lat, t.lon], {
-      icon: targetIcon(spec, t.course, t.count, t.relation),
-      opacity,
-      riseOnHover: true,
-      // Fresher targets sit above older, faded ones where they overlap.
-      zIndexOffset: Math.round(opacity * 500),
-    });
+  /*
+   * Say plainly which of the two this is. The icon carries it too, but the popup is
+   * where someone checks before deciding whether to move.
+   */
+  const where = POSITION_RELATIONS.has(t.relation)
+    ? (t.label ? `над ${escapeHtml(t.label)}` : '')
+    : (t.label ? `курс на ${escapeHtml(t.label)}<br><span class="muted">ще не там</span>` : '');
 
-    const near = me ? Math.round(distanceKm(me.lat, me.lon, t.lat, t.lon)) : null;
-    /*
-     * Say plainly which of the two this is. The icon carries it too, but the popup is
-     * where someone checks before deciding whether to move.
-     */
-    const where = POSITION_RELATIONS.has(t.relation)
-      ? (t.label ? `над ${escapeHtml(t.label)}` : '')
-      : (t.label ? `курс на ${escapeHtml(t.label)}<br><span class="muted">ще не там</span>` : '');
+  // Distance is the question; time is the answer to it, and only honest when the
+  // thing is actually pointed at you.
+  const proximity = track.rel.km === null ? ''
+    : `<br><span class="muted">~${Math.round(track.rel.km)} км від вас` +
+      (track.rel.approaching ? ` · ~${Math.round(track.rel.etaMin)} хв` : '') +
+      '</span>';
 
-    marker.bindPopup(
-      `<strong>${spec.label}${t.count > 1 ? ' ×' + t.count : ''}</strong><br>` +
-      (where ? where + '<br>' : '') +
-      `<span class="muted">${minutesAgo(t.at, now)} тому</span>` +
-      (t.reports > 1 ? `<span class="muted"> · ${t.reports} відміток на маршруті</span>` : '') +
-      (near !== null ? `<br><span class="muted">~${near} км від вас</span>` : ''),
-    );
+  marker.bindPopup(
+    `<strong>${spec.label}${t.count > 1 ? ' ×' + t.count : ''}</strong><br>` +
+    (where ? where + '<br>' : '') +
+    `<span class="muted">${minutesAgo(t.at, now)} тому</span>` +
+    (t.reports > 1 ? `<span class="muted"> · ${t.reports} відміток на маршруті</span>` : '') +
+    proximity,
+  );
 
-    marker.addTo(targetLayer);
+  marker.addTo(targetLayer);
 
-    // A track line makes the direction readable at a glance, which a small rotated
-    // glyph alone does not achieve on a phone.
-    if (t.fromLat !== null && t.fromLon !== null) {
-      L.polyline([[t.fromLat, t.fromLon], [t.lat, t.lon]], {
-        color: spec.color,
-        weight: 1.5,
-        opacity: opacity * 0.5,
-        dashArray: '4 5',
-        interactive: false,
-      }).addTo(targetLayer);
-    }
+  /*
+   * The origin dash is the only evidence of direction a single sighting has. With two
+   * or more points the track polyline already says it, and drawing both doubled every
+   * flight's lines.
+   */
+  if (track.points.length === 1 && t.fromLat !== null && t.fromLon !== null) {
+    L.polyline([[t.fromLat, t.fromLon], [t.lat, t.lon]], {
+      color: spec.color,
+      weight: 1.5,
+      opacity: opacity * 0.5,
+      dashArray: '4 5',
+      interactive: false,
+    }).addTo(targetLayer);
   }
 }
 
@@ -777,15 +1046,19 @@ function drawStatus() {
   if (!state) return;
   const now = Date.now();
 
-  // Only count what is still live; the map keeps faded ones for context.
-  // Must apply the same all-clear rule as the map, or the count contradicts what the
-  // reader can actually see.
-  const byOblast = new Map(state.alerts.map((a) => [a.oblast, a]));
-  // Count aircraft, not sightings: the header said "13 цілей" for three drones.
-  const live = buildTracks(
-    dedupeTargets(state.targets).filter((t) => !silencedByAllClear(t, byOblast, now)),
-  ).filter((track) => now - track.head.at < FADE_MS).length;
-  el('count').textContent = String(live);
+  /*
+   * Same population the map draws — `liveTracks` is shared precisely so the header
+   * and the markers cannot drift apart, which is how "13 цілей" once sat above three
+   * drones.
+   */
+  const tracks = liveTracks(now);
+  el('total').textContent = String(tracks.length);
+  el('near').textContent = me
+    ? String(tracks.filter((t) => t.rel.tier === 'near').length)
+    : '—';
+  // Without a position there is no "near", and the map should say so rather than
+  // quietly showing a zero that looks like good news.
+  document.body.classList.toggle('no-me', !me);
 
   // One number, matching the single colour on the map.
   const active = state.alerts.filter((a) => a.active).length;
@@ -884,11 +1157,24 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') toggleShee
 const radiusInput = el('radius');
 radiusInput.value = String(radiusKm);
 el('radius-val').textContent = radiusKm + ' км';
+/*
+ * The slider now decides which flights count as near, so it has to redraw the map,
+ * not just resize the ring. Coalesced with rAF because `input` fires continuously
+ * while dragging and a redraw walks every track.
+ */
+let radiusFrame = 0;
 radiusInput.addEventListener('input', () => {
   radiusKm = Number(radiusInput.value);
   el('radius-val').textContent = radiusKm + ' км';
   localStorage.setItem('radiusKm', String(radiusKm));
   drawMe();
+
+  if (radiusFrame) cancelAnimationFrame(radiusFrame);
+  radiusFrame = requestAnimationFrame(() => {
+    radiusFrame = 0;
+    drawTargets();
+    drawStatus();
+  });
 });
 
 function startWatching(recentre) {

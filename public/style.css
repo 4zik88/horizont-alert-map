@@ -170,9 +170,12 @@ body.sheet-open .leaflet-control-attribution {
 
 .tgt-mark {
   position: absolute;
-  left: -13px;
-  top: -13px;
-  width: 26px;
+  /* Size is set per tier on the element as --s, so the offsets must follow it or a
+     34px near marker would sit off its own coordinate. */
+  --s: 26px;
+  left: calc(var(--s) / -2);
+  top: calc(var(--s) / -2);
+  width: var(--s);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -203,7 +206,21 @@ body.sheet-open .leaflet-control-attribution {
   text-shadow: 0 1px 2px #000;
 }
 
-.zoomed-out .tgt-mark em { display: none; }
+/*
+ * Labels only where they are read.
+ *
+ * Three zoom states instead of one switch. The old rule hid labels below zoom 6 — and
+ * the default view is zoom 6, so every label was on at the one view that was
+ * unreadable. Near labels survive everywhere: they are the personal emphasis, and at
+ * country zoom they are the only text left on the map.
+ */
+body[data-zoom="country"] .tgt-mark:not(.t-near) em { display: none; }
+body[data-zoom="region"] .tgt-mark.t-far em { display: none; }
+body[data-zoom="country"] .launch em,
+body[data-zoom="region"] .launch em { display: none; }
+
+.t-near em { font-size: 10.5px; background: #0d1117; }
+.t-far em { font-size: 9px; opacity: 0.75; }
 
 /* A destination, not a position: hollow silhouette for something on its way, solid
    for something reported overhead. The shape still says what is coming; the outline
@@ -233,7 +250,6 @@ body.sheet-open .leaflet-control-attribution {
 
 /* A launch stays visible when zoomed out — knowing something was fired matters at
    country scale — but its label does not, same as a target's. */
-.zoomed-out .launch em { display: none; }
 
 /* Count badge, only drawn when more than one was reported. */
 .tgt-mark s {
@@ -299,3 +315,57 @@ body.sheet-open .leaflet-control-attribution {
 }
 
 .byline a:hover { text-decoration: underline; }
+
+/*
+ * Cluster chip.
+ *
+ * Always a number — shape carries type on this map, so a cluster showing neither
+ * shape nor count would say nothing at all. The chevron appears only when the members
+ * agree on a heading, and restores the one thing clustering destroys: whether the
+ * group is coming your way.
+ */
+.cluster-wrap { background: none; border: none; }
+
+.tgt-cluster {
+  display: grid;
+  place-items: center;
+  width: var(--s);
+  height: var(--s);
+  border-radius: 50%;
+  background: rgba(13, 17, 23, 0.9);
+  border: 2px solid var(--c);
+  color: var(--c);
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+  cursor: pointer;
+}
+
+/* The heading chevron, pinned outside the ring and rotated to the group's mean. */
+.tgt-cluster i {
+  position: absolute;
+  width: var(--s);
+  height: var(--s);
+  transform-origin: 50% 50%;
+  pointer-events: none;
+}
+
+.tgt-cluster i::before {
+  content: '';
+  position: absolute;
+  top: -7px;
+  left: 50%;
+  margin-left: -4px;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-bottom: 6px solid var(--c);
+}
+
+/* Without a position there is no "поруч", and a zero there would read as good news. */
+body.no-me #near,
+body.no-me .unit:first-of-type,
+body.no-me .sep { display: none; }
+
+.unit { font-size: 12px; margin-left: 3px; }
+.sep { margin: 0 4px; }
