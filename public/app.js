@@ -244,10 +244,20 @@ const escapeHtml = (s) => s.replace(/[&<>"]/g, (c) =>
 
 /* ── rendering ────────────────────────────────────────────── */
 
+/*
+ * One alert colour, not two.
+ *
+ * The feed used to paint the partial level amber and the oblast-wide level red,
+ * mirroring alerts.in.ua. In use that read as two things to decide between at a
+ * glance, and the amber shading also sat close enough to the amber drone icons to
+ * blur which was which. An alert is an alert: what matters is whether to take cover,
+ * and the level is still in the data for anyone who wants it.
+ */
+const ALERT_RED = '#f85149';
 const PAINT = {
-  full:    { color: '#f85149', fill: '#f85149', fillOpacity: 0.20, weight: 1.4, opacity: 0.9 },
-  partial: { color: '#d29922', fill: '#d29922', fillOpacity: 0.18, weight: 1.3, opacity: 0.85 },
-  none:    { color: '#30363d', fill: '#f85149', fillOpacity: 0,    weight: 0.7, opacity: 0.3 },
+  full:    { color: ALERT_RED, fill: ALERT_RED, fillOpacity: 0.20, weight: 1.4, opacity: 0.9 },
+  partial: { color: ALERT_RED, fill: ALERT_RED, fillOpacity: 0.18, weight: 1.3, opacity: 0.85 },
+  none:    { color: '#30363d', fill: ALERT_RED, fillOpacity: 0,    weight: 0.7, opacity: 0.3 },
 };
 
 /*
@@ -749,11 +759,9 @@ function drawStatus() {
   ).filter((track) => now - track.head.at < FADE_MS).length;
   el('count').textContent = String(live);
 
-  const red = state.alerts.filter((a) => a.level === 'full').length;
-  const yellow = state.alerts.filter((a) => a.level === 'partial').length;
-  el('alerts').innerHTML = yellow > 0
-    ? `тривог: <b class="lvl-red">${red}</b> / <b class="lvl-yellow">${yellow}</b>`
-    : `тривог: <b class="lvl-red">${red}</b>`;
+  // One number, matching the single colour on the map.
+  const active = state.alerts.filter((a) => a.active).length;
+  el('alerts').innerHTML = `тривог: <b class="lvl-red">${active}</b>`;
   el('updated').textContent = 'оновлено ' + minutesAgo(state.now, now);
 
   const newest = Math.max(0, ...state.channels.map((c) => c.lastSuccessAt || 0));

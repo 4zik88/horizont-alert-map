@@ -51,9 +51,8 @@ html, body {
 .bar-main strong { font-size: 20px; font-variant-numeric: tabular-nums; }
 .bar-side { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size: 12px; }
 .muted { color: var(--muted); }
-/* Red is the missile level, yellow the drone level — the same coding as the map. */
+/* One alert colour: the map paints every active alert red, and the header matches. */
 .lvl-red { color: var(--alert); font-weight: 700; }
-.lvl-yellow { color: var(--warn); font-weight: 700; }
 
 .dot {
   width: 9px; height: 9px; border-radius: 50%;
