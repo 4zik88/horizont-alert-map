@@ -338,6 +338,46 @@ function drawAlerts() {
  */
 const ALERT_GRACE_MS = 5 * 60 * 1000;
 
+/*
+ * Collapse repeated reports of the same target.
+ *
+ * Four channels cover the same sky, and one drone crossing an oblast is posted again
+ * every few minutes as it moves — so a single Shahed over Ananyiv arrived as seven
+ * markers stacked on one point. Measured over an hour of real traffic: 89 targets for
+ * 56 distinct places, 37% of the map redundant.
+ *
+ * Identity is the type plus the position rounded to ~1 km. Type matters: a КАБ and a
+ * БпЛА over the same town are two different threats and must stay two markers.
+ *
+ * The surviving marker is the freshest report, but it carries the *largest* count
+ * anyone gave, never the sum — "5 шахедів на Затоку" repeated by three channels is
+ * five drones, not fifteen. Same rule the bot already uses when batching a warning.
+ */
+function dedupeTargets(targets) {
+  const best = new Map();
+
+  for (const t of targets) {
+    const key = `${t.type}|${t.lat.toFixed(2)},${t.lon.toFixed(2)}`;
+    const seen = best.get(key);
+
+    if (!seen) {
+      best.set(key, { ...t, reports: 1 });
+      continue;
+    }
+
+    const fresher = t.at > seen.at ? t : seen;
+    best.set(key, {
+      ...fresher,
+      count: Math.max(t.count, seen.count),
+      // A heading from either report beats none: the fresher line may omit it.
+      course: fresher.course !== null ? fresher.course : (seen.course ?? t.course),
+      reports: seen.reports + 1,
+    });
+  }
+
+  return [...best.values()];
+}
+
 function silencedByAllClear(target, byOblast, now) {
   if (!state.alerts || state.alerts.length === 0) return false;
   if (!target.oblast) return false;
@@ -354,7 +394,7 @@ function drawTargets() {
   const now = Date.now();
   const byOblast = new Map(state.alerts.map((a) => [a.oblast, a]));
 
-  for (const t of state.targets) {
+  for (const t of dedupeTargets(state.targets)) {
     if (silencedByAllClear(t, byOblast, now)) continue;
 
     const spec = TYPES[t.type] || TYPES.unknown;
@@ -373,6 +413,7 @@ function drawTargets() {
       `<strong>${spec.label}${t.count > 1 ? ' ×' + t.count : ''}</strong><br>` +
       (t.label ? escapeHtml(t.label) + '<br>' : '') +
       `<span class="muted">${minutesAgo(t.at, now)} тому</span>` +
+      (t.reports > 1 ? `<span class="muted"> · ${t.reports} повідомлення</span>` : '') +
       (near !== null ? `<br><span class="muted">~${near} км від вас</span>` : ''),
     );
 
@@ -470,7 +511,7 @@ function drawStatus() {
   // Must apply the same all-clear rule as the map, or the count contradicts what the
   // reader can actually see.
   const byOblast = new Map(state.alerts.map((a) => [a.oblast, a]));
-  const live = state.targets.filter(
+  const live = dedupeTargets(state.targets).filter(
     (t) => now - t.at < FADE_MS && !silencedByAllClear(t, byOblast, now),
   ).length;
   el('count').textContent = String(live);
