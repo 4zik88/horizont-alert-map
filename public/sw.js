@@ -5,7 +5,7 @@
  *
  * Live data is never cached: a stale target map would be worse than an empty one.
  */
-const CACHE = 'horizont-v19';
+const CACHE = 'horizont-v20';
 const SHELL = [
   '/',
   '/style.css',
@@ -14,6 +14,7 @@ const SHELL = [
   '/vendor/leaflet.css',
   '/manifest.webmanifest',
   '/icons/icon-192.png',
+  '/icons/icon.svg',
 ];
 
 self.addEventListener('install', (event) => {
