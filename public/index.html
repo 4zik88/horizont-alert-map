@@ -26,9 +26,12 @@
 
 <header id="bar">
   <div class="bar-main">
-    <span id="dot" class="dot" title="Стан джерел"></span>
-    <strong id="count">—</strong>
-    <span class="muted">цілей</span>
+    <div class="bar-count">
+      <span id="dot" class="dot" title="Стан джерел"></span>
+      <strong id="count">—</strong>
+      <span class="muted">цілей</span>
+    </div>
+    <span class="byline">Розробка — <a href="https://t.me/f0zik" target="_blank" rel="noopener noreferrer">@f0zik</a></span>
   </div>
   <div class="bar-side">
     <span id="alerts" class="muted">тривог: —</span>
@@ -44,10 +47,7 @@
 <section id="sheet" class="collapsed" aria-label="Стрічка повідомлень">
   <button id="grip" aria-label="Згорнути або розгорнути стрічку"><span></span></button>
   <div id="sheet-head">
-    <div class="sheet-title">
-      <strong>Стрічка</strong>
-      <span class="byline">Розробка — <a href="https://t.me/f0zik" target="_blank" rel="noopener noreferrer">@f0zik</a></span>
-    </div>
+    <strong>Стрічка</strong>
     <label class="radius">
       радіус
       <input id="radius" type="range" min="5" max="120" step="5" value="40">

@@ -43,7 +43,11 @@ html, body {
   background: linear-gradient(180deg, rgba(13,17,23,0.95), rgba(13,17,23,0));
   pointer-events: none;
 }
-.bar-main { display: flex; align-items: baseline; gap: 6px; }
+/* Two columns, two lines each: count over credit on the left, alerts over freshness
+   on the right. Keeping both sides the same shape is what stops the bar looking
+   lopsided once the credit is in it. */
+.bar-main { display: flex; flex-direction: column; gap: 1px; }
+.bar-count { display: flex; align-items: baseline; gap: 6px; }
 .bar-main strong { font-size: 20px; font-variant-numeric: tabular-nums; }
 .bar-side { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size: 12px; }
 .muted { color: var(--muted); }
@@ -263,18 +267,11 @@ body.sheet-open .leaflet-control-attribution {
 
 .nojs { position: absolute; inset: 0; display: grid; place-items: center; z-index: 900; }
 
-/* Credit, under the feed title.
+/* Credit, in the status bar.
 
-   It first went at the foot of the list, which meant scrolling past every message to
-   reach it — present and effectively invisible. In the header it is always on screen
-   while the feed is open, and small enough not to compete with the reports. */
-.sheet-title {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  flex: 0 0 auto;
-}
-
+   It went to the foot of the feed first, which meant scrolling past every message to
+   reach it — present and effectively invisible. In the bar it is on screen the moment
+   the map loads, and the bar is the one element that is never covered. */
 .byline {
   color: #6e7681;
   font-size: 10.5px;
@@ -285,6 +282,9 @@ body.sheet-open .leaflet-control-attribution {
 .byline a {
   color: #58a6ff;
   text-decoration: none;
+  /* `#bar` sets pointer-events: none so the map stays draggable underneath it, and
+     that is inherited — without this the link is visible but not clickable. */
+  pointer-events: auto;
 }
 
 .byline a:hover { text-decoration: underline; }
