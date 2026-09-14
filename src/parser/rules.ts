@@ -3,6 +3,7 @@ import { matchOblast } from './oblasts.js';
 import { BOUNDARY_LEFT } from './regex.js';
 import { classifyType, extractCount, inferBareType, type TargetType } from './targetTypes.js';
 import { extractApproachCourse, extractCourse } from './compass.js';
+import { matchWater } from './water.js';
 
 /** How a target relates to the place named. */
 export type Relation = 'towards' | 'past' | 'through' | 'over' | 'from';
@@ -35,20 +36,37 @@ const RELATION_CUES: { relation: Relation; source: string }[] = [
   { relation: 'towards', source: 'курс(?:ом)?\\s+на' },
   { relation: 'towards', source: '[ву]\\s+напрямку(?:\\s+на)?' },
   { relation: 'towards', source: 'напрямком\\s+на' },
+  { relation: 'towards', source: '[ву]\\s+б[іi]к' },
+  // "наближаються до Броварів", "підлітає до Ніжина" — the single most common way
+  // these channels phrase an approach, and the bare preposition is safe because the
+  // place pattern is case-sensitive ("до цілі" is lowercase and falls through).
+  { relation: 'towards', source: 'до' },
   { relation: 'from', source: 'з\\s+боку' },
   { relation: 'from', source: 'зі\\s+сторони' },
+  { relation: 'from', source: 'з\\s+акваторі[її]' },
+  /*
+   * A bare "з" is safe only because the place pattern is case-sensitive: "з
+   * Херсонщини" names an origin, while "з півночі" and "з заходу" are lowercase and
+   * fall through to the compass rules that read them as an approach bearing.
+   */
+  { relation: 'from', source: 'з|із|зі' },
   { relation: 'past', source: 'повз' },
   { relation: 'through', source: 'через' },
   { relation: 'over', source: 'над' },
   // "в р-ні Павлограду", "поблизу Ніжина", "північніше Нікополя" — all say where the
   // target currently is rather than where it is going.
-  { relation: 'over', source: '[ву]\\s+р-?н[іi]?\\.?(?:\\s+н\\.?п\\.?)?' },
+  { relation: 'over', source: '[ву]\\s+р[-–—]?н[іi]?\\.?(?:\\s+н\\.?п\\.?)?' },
   { relation: 'over', source: '[ву]\\s+район[іi]' },
   { relation: 'over', source: 'поблизу|біля|неподалік' },
+  // "на межі Одеської та Миколаївської областей" — a position between two regions;
+  // the first one names it well enough, and the heading comes from the stated course.
+  { relation: 'over', source: 'на\\s+меж[іi]' },
   { relation: 'over', source: '(?:північн|південн|західн|східн)[а-яіїєґ]*іше' },
   // "на півдні Сумщини" locates the target inside a region rather than sending it
   // there; the heading then comes from a stated compass course.
-  { relation: 'over', source: 'на\\s+(?:півноч[іi]|півдн[іi]|сход[іi]|заход[іi])' },
+  // Both cases occur: "на півдні Одещини" (locative) and "на південь Одещини"
+  // (accusative). Either way it locates the target inside the region.
+  { relation: 'over', source: 'на\\s+(?:півноч[іi]|півдн[іi]|сход[іi]|заход[іi]|північ|південь|схід|захід)' },
   { relation: 'towards', source: 'на' },
 ];
 
@@ -76,7 +94,7 @@ const CUE_RE = new RegExp(
  * Filler between the cue and the name: "у напрямку центру Києва", "на н.п. Гуляйполе".
  * Without it the capitalised name is never reached and the cue is discarded.
  */
-const PLACE_FILLER = '(?:(?:центр[ауі]|окол[иі]ц[іь]|н\\.?\\s?п\\.?|м\\.|с\\.|смт)\\s+)?';
+const PLACE_FILLER = '(?:(?:центр[ауі]|окол[иі]ц[іь])\\s+|(?:н\\.?\\s?п\\.?|м\\.|с\\.|смт)\\s*)?';
 const CAP_WORD = '[А-ЯІЇЄҐA-Z][^\\s,.;:!?()]*';
 /** `u` but deliberately NOT `i` — the capitalisation is the signal. */
 const PLACE_RE = new RegExp(
@@ -89,8 +107,20 @@ function placeAfter(text: string): string | undefined {
   return PLACE_RE.exec(text)?.[1];
 }
 
-function relationFor(cue: string): Relation {
+/*
+ * A bare "на" is the one cue whose meaning depends on the case of what follows.
+ * "на Одещину" (accusative) sends the target there; "на Одещині" (locative) says it
+ * is already over it. Reading the locative as a destination inverted the course on
+ * every "на Херсонщині у напрямку Чорного моря" — the arrow pointed inland from the
+ * sea instead of out to it.
+ */
+const BARE_NA = /^на$/iu;
+const LOCATIVE = /[іїi]$/u;
+
+function relationFor(cue: string, phrase?: string): Relation {
   const normalised = cue.toLowerCase().replace(/\s+/g, ' ');
+  if (phrase && BARE_NA.test(normalised) && LOCATIVE.test(phrase.trim())) return 'over';
+
   for (const { relation, source } of RELATION_CUES) {
     if (new RegExp(`^(?:${source})$`, 'iu').test(normalised)) return relation;
   }
@@ -155,6 +185,50 @@ export function parseLine(line: string, context: ParseContext): ParsedTarget[] {
   return parseClause(cleaned, context);
 }
 
+/*
+ * "5 шахедів Затока міст", "Одещина реактивний Новокальчеве" — a type and a place
+ * with no preposition between them. There is no relation to read, so the target is
+ * recorded as being *over* the place rather than heading for it, which is the weaker
+ * and safer of the two readings.
+ *
+ * Guarded by a recognised target type: without that this would turn any capitalised
+ * word in ordinary channel chatter into a marker.
+ */
+function bareMention(
+  rest: string,
+  type: TargetType,
+  inferred: boolean,
+  cleaned: string,
+  context: ParseContext,
+): ParsedTarget[] {
+  if (type === 'unknown') return [];
+
+  for (const match of rest.matchAll(/(?<![\p{L}\p{N}])([А-ЯІЇЄҐ][^\s,.;:!?()]{2,})/gu)) {
+    const place = context.gazetteer.resolve(match[1]!, context.oblast);
+    if (place?.kind !== 'settlement') continue;
+    if (place.oblast) context.oblast = place.oblast;
+
+    return [{
+      type,
+      rawType: rawTypeOf(rest),
+      count: extractCount(rest),
+      oblast: place.oblast ?? context.oblast,
+      relation: 'over',
+      toName: place.name,
+      toLat: place.lat,
+      toLon: place.lon,
+      fromName: null,
+      fromLat: null,
+      fromLon: null,
+      courseDeg: extractCourse(rest) ?? extractApproachCourse(rest),
+      // Lower than a cued mention: the line never said how the two relate.
+      confidence: place.confidence * (inferred ? 0.7 : 0.8),
+      sourceLine: cleaned,
+    }];
+  }
+  return [];
+}
+
 /** Parse one clause into at most one target. */
 function parseClause(line: string, context: ParseContext): ParsedTarget[] {
   const cleaned = line.replace(EMOJI, ' ').replace(/\s+/g, ' ').trim();
@@ -199,28 +273,54 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
   }
   if (type !== 'unknown' && !inferred) context.type = type;
 
+  /*
+   * `tail` is everything after the cue, kept alongside the capitalised phrase because
+   * water names are half lowercase — "Чорного моря" gives up only "Чорного" to a
+   * case-sensitive place pattern, which matches no sea.
+   */
   CUE_RE.lastIndex = 0;
   const matches = [...rest.matchAll(CUE_RE)]
-    .map((m) => ({ cue: m[1]!, phrase: placeAfter(rest.slice(m.index + m[0].length)) }))
-    .filter((m): m is { cue: string; phrase: string } => m.phrase !== undefined);
-  if (matches.length === 0) return [];
+    .map((m) => {
+      const tail = rest.slice(m.index + m[0].length);
+      return { cue: m[1]!, phrase: placeAfter(tail), tail };
+    })
+    .filter((m): m is { cue: string; phrase: string; tail: string } =>
+      m.phrase !== undefined || matchWater(m.tail) !== undefined);
+  if (matches.length === 0) return bareMention(rest, type, inferred, cleaned, context);
 
   // Two passes. An oblast named in a line is usually *context* — "БпЛА на
   // Житомирщині, змінив курс на Коростень" is over Zhytomyr oblast heading for
   // Korosten, not heading for the oblast — so oblasts are resolved first and used to
   // disambiguate the settlements, and only stand in as a destination when the line
   // names no settlement at all ("КАБи на Дніпропетровщину").
-  const cues = matches.map((m) => ({ relation: relationFor(m.cue), phrase: m.phrase }));
+  const cues = matches.map((m) => ({
+    relation: relationFor(m.cue, m.phrase),
+    phrase: m.phrase ?? '',
+    tail: m.tail,
+  }));
 
   for (const cue of cues) {
     const oblast = matchOblast(cue.phrase) ?? matchOblast(cue.phrase.split(/\s+/)[0] ?? '');
     if (oblast) context.oblast = oblast.key;
   }
 
-  const resolvePhrase = (phrase: string): Resolution | undefined => {
+  const resolvePhrase = (phrase: string, tail: string): Resolution | undefined => {
     const bare = phrase.trim();
     // "над містом" points back at the header city.
     if (CITY_WORD.test(bare)) return context.city ?? undefined;
+    // "у напрямку Чорного моря", "з акваторії Азовського моря" — coarse, but a real
+    // end of a real movement, and the only thing these lines give to draw with.
+    const water = matchWater(tail);
+    if (water) {
+      return {
+        name: water.name,
+        lat: water.lat,
+        lon: water.lon,
+        oblast: null,
+        kind: 'oblast',
+        confidence: 0.5,
+      };
+    }
     // "Одеси/Лиманки", "Затоку/Чорноморськ/Одесу" — take the first part that resolves.
     for (const part of bare.split('/')) {
       const hit = context.gazetteer.resolve(part, context.oblast);
@@ -232,7 +332,7 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
   const settlements: { relation: Relation; place: Resolution }[] = [];
   const regions: { relation: Relation; place: Resolution }[] = [];
   for (const cue of cues) {
-    const resolved = resolvePhrase(cue.phrase);
+    const resolved = resolvePhrase(cue.phrase, cue.tail);
     if (!resolved) continue;
     (resolved.kind === 'settlement' ? settlements : regions).push({
       relation: cue.relation,

@@ -61,9 +61,19 @@ function inflectWord(word: string): Set<string> {
     // Plural soft: Чернівці -> Чернівців.
     add(stem + 'ів', stem + 'ям', stem + 'ями', stem + 'ях');
   } else if (word.endsWith('ий') || word.endsWith('ій')) {
-    // Adjectival masculine: Зміїний, Синельникове-type.
+    // Adjectival masculine: Хмельницький -> Хмельницького, Зміїний -> Зміїного.
     const base = word.slice(0, -2);
     add(base + 'ого', base + 'ому', base + 'им', base + 'ім', base + 'ий', base + 'ій');
+
+    /*
+     * Not every -ий name is an adjective: "Стрий" is a noun and declines Стрию,
+     * Стрия, Стриєм. Telling the two apart by the stem does not work — "Стрий" and
+     * the genuinely adjectival "Старий" both leave a three-letter stem ending in
+     * -р — so both paradigms are generated, which is what this module does
+     * everywhere else.
+     */
+    const noun = word.slice(0, -1);
+    add(noun + 'ю', noun + 'я', noun + 'єм', noun + 'ї', noun + 'єві');
   } else {
     // Consonant-final masculine: accusative equals nominative for inanimates,
     // which is why "на Богодухів" needs no change — but the obliques do.
