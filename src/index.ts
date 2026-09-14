@@ -1,6 +1,7 @@
 import { config, redactedConfig } from './config.js';
 import { closeDb, openDb } from './db/index.js';
 import { Repo } from './db/repo.js';
+import { seedGazetteerIfEmpty } from './db/seed.js';
 import { startServer } from './http/server.js';
 import { MapApi } from './http/api.js';
 import { logger } from './logger.js';
@@ -25,6 +26,9 @@ async function main(): Promise<void> {
   );
 
   const db = openDb(config.DB_PATH);
+  // A fresh volume has no gazetteer, and without one the parser resolves nothing
+  // while the service still reports healthy.
+  seedGazetteerIfEmpty(db);
   const repo = new Repo(db);
 
   // The map is served only when a token is configured; without one the service is
