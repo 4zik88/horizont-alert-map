@@ -8,11 +8,18 @@
  * the arrow that makes a target legible.
  */
 const POINTS: { deg: number; source: string }[] = [
-  // Compound directions first: "північно-східний" must not match as "північ".
-  { deg: 45, source: 'північно[- ]?схід[а-яіїєґ]*' },
-  { deg: 135, source: 'південно[- ]?схід[а-яіїєґ]*' },
-  { deg: 225, source: 'південно[- ]?захід[а-яіїєґ]*' },
-  { deg: 315, source: 'північно[- ]?захід[а-яіїєґ]*' },
+  /*
+   * Compound directions first: "північно-східний" must not match as "північ".
+   *
+   * The first half inflects as freely as the second — the channels write
+   * "північно-західний", "північний-Захід", "північно-Захід" — so matching only the
+   * literal "північно" read "курсом на північний-Захід" as plain north, a 45-degree
+   * error on a target that was told to us exactly.
+   */
+  { deg: 45, source: 'північн[а-яіїєґ]*[- ]?с(?:хід|ход)[а-яіїєґ]*' },
+  { deg: 135, source: 'південн[а-яіїєґ]*[- ]?с(?:хід|ход)[а-яіїєґ]*' },
+  { deg: 225, source: 'південн[а-яіїєґ]*[- ]?з(?:ахід|аход)[а-яіїєґ]*' },
+  { deg: 315, source: 'північн[а-яіїєґ]*[- ]?з(?:ахід|аход)[а-яіїєґ]*' },
   { deg: 0, source: 'північн[а-яіїєґ]*|північ' },
   { deg: 90, source: 'східн[а-яіїєґ]*|схід' },
   { deg: 180, source: 'південн[а-яіїєґ]*|південь' },

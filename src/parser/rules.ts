@@ -102,9 +102,21 @@ const PLACE_RE = new RegExp(
   'u',
 );
 
+/*
+ * A cue can point at a compass direction before it points at a place: "курсом на
+ * північний-Захід (Рудниця Крижопіль)" states the heading first and names the
+ * settlements second. Skipping the direction — and the bracket the channels put the
+ * names in — is what lets the place behind it be seen at all.
+ */
+const LEADING_COMPASS =
+  /^(?:північн|південн|східн|західн|північ|південь|схід|захід)[а-яіїєґ]*(?:\s*[-–—]?\s*(?:північн|південн|східн|західн|північ|південь|схід|захід)[а-яіїєґ]*)?/iu;
+const LEADING_NOISE = /^[\s(«"„\-–—,:]+/u;
+
 /** The phrase a cue points at, or undefined when it points at nothing nameable. */
 function placeAfter(text: string): string | undefined {
-  return PLACE_RE.exec(text)?.[1];
+  const trimmed = text.replace(LEADING_NOISE, '');
+  const beyondCompass = trimmed.replace(LEADING_COMPASS, '').replace(LEADING_NOISE, '');
+  return PLACE_RE.exec(beyondCompass)?.[1];
 }
 
 /*
