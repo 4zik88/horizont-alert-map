@@ -263,21 +263,28 @@ body.sheet-open .leaflet-control-attribution {
 
 .nojs { position: absolute; inset: 0; display: grid; place-items: center; z-index: 900; }
 
-/* Credit, at the foot of the feed: present without competing with the reports above
-   it, and only reachable once the reader has scrolled past what matters. */
-.about {
-  list-style: none;
-  padding: 14px 16px 22px;
-  border-top: 1px solid #21262d;
-  color: #6e7681;
-  font-size: 11.5px;
-  line-height: 1.6;
-  text-align: center;
+/* Credit, under the feed title.
+
+   It first went at the foot of the list, which meant scrolling past every message to
+   reach it — present and effectively invisible. In the header it is always on screen
+   while the feed is open, and small enough not to compete with the reports. */
+.sheet-title {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 0 0 auto;
 }
 
-.about a {
+.byline {
+  color: #6e7681;
+  font-size: 10.5px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.byline a {
   color: #58a6ff;
   text-decoration: none;
 }
 
-.about a:hover { text-decoration: underline; }
+.byline a:hover { text-decoration: underline; }
