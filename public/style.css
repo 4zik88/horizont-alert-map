@@ -170,6 +170,9 @@ body.sheet-open .leaflet-control-attribution {
 
 .tgt-mark {
   position: absolute;
+  /* Heading markers are pushed back along their own course, so they sit on the side
+     they are coming from rather than on the town they are heading for. */
+  transform: translate(var(--dx, 0), var(--dy, 0));
   /* Size is set per tier on the element as --s, so the offsets must follow it or a
      34px near marker would sit off its own coordinate. */
   --s: 26px;
@@ -233,6 +236,21 @@ body[data-zoom="region"] .launch em { display: none; }
 }
 
 .heading em { opacity: 0.85; }
+
+/* The leader runs from the marker to the place it is heading for. It is a pointer,
+   not a path: it says "toward here", where the old track lines said "was here". */
+.lead {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: var(--lead);
+  border-left: 1.5px dashed var(--c);
+  opacity: 0.45;
+  transform-origin: 0 0;
+  transform: rotate(var(--lrot));
+  pointer-events: none;
+}
 
 /* Launch sites read as a hollow burst, never a silhouette: the rays are stroked
    rather than filled, so the two cannot be confused at thumbnail size.

@@ -5,7 +5,7 @@
  *
  * Live data is never cached: a stale target map would be worse than an empty one.
  */
-const CACHE = 'horizont-v24';
+const CACHE = 'horizont-v25';
 const SHELL = [
   '/',
   '/style.css',

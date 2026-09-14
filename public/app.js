@@ -165,6 +165,30 @@ function targetIcon(spec, course, count, relation, rel) {
   const cls = `tgt-mark${heading ? ' heading' : ''} t-${rel?.tier ?? 'mid'}`;
 
   /*
+   * A heading target is drawn *behind* its destination, on the side it is coming
+   * from, with its nose pointing at the town — not sitting on the town itself.
+   *
+   * Placing it on the settlement said the drone was there; the hollow outline said
+   * otherwise, but the position spoke louder. Offsetting it backwards along its own
+   * course says "approaching from here" with the geometry rather than with a legend,
+   * and it frees the town label underneath.
+   *
+   * Screen axes: x right, y down, course measured clockwise from north. Travelling
+   * along (sin, -cos), so the tail sits at the negation of that.
+   */
+  const lead = Math.round(tier.size * 0.85);
+  let shift = '';
+  let leader = '';
+  if (heading && course !== null) {
+    const rad = (course * Math.PI) / 180;
+    const dx = -Math.sin(rad) * lead;
+    const dy = Math.cos(rad) * lead;
+    shift = `--dx:${dx.toFixed(1)}px;--dy:${dy.toFixed(1)}px;`;
+    // Rotating a downward unit vector clockwise by (180 - course) points it forward.
+    leader = `<i class="lead" style="--lead:${lead}px;--lrot:${(180 - course).toFixed(1)}deg"></i>`;
+  }
+
+  /*
    * The near label carries the number worth reading. Distance answers "where", the
    * minutes answer "how long have I got" — and the minutes are shown only when the
    * thing is actually pointed at you, or they would be a guess dressed as a fact.
@@ -179,7 +203,8 @@ function targetIcon(spec, course, count, relation, rel) {
   return L.divIcon({
     className: 'tgt',
     html:
-      `<span class="${cls}" style="--c:${spec.color};--s:${tier.size}px">` +
+      `<span class="${cls}" style="--c:${spec.color};--s:${tier.size}px;${shift}">` +
+      leader +
       `<svg viewBox="0 0 24 24" width="${tier.size}" height="${tier.size}" ` +
       `style="transform:rotate(${rotation}deg)">` +
       `${ring}<path d="${spec.path}"/></svg>` +
@@ -303,6 +328,16 @@ const escapeHtml = (s) => s.replace(/[&<>"]/g, (c) =>
  */
 const ALERT_RED = '#f85149';
 /*
+ * The edge is a lighter tone than the fill rather than the same red.
+ *
+ * Stroke and fill in one colour made the boundary dissolve into the area, so a raion
+ * under alert read as a vague red smear. A brighter edge states where the alert
+ * actually stops, and being lighter rather than a different hue keeps "red means
+ * alert" intact — the amber and orange of the target icons stay unambiguous against
+ * it.
+ */
+const ALERT_EDGE = '#ff9d97';
+/*
  * A wash, not a flood — but still a wash. 0.20 drowned the targets; 0.06, tried
  * first, left "тільки контури" and the alert stopped reading as an area at all. 0.16
  * is the middle that keeps the shaded region obvious while the markers stay on top of
@@ -313,8 +348,8 @@ const ALERT_RED = '#f85149';
  * edges before a single alert existed.
  */
 const PAINT = {
-  full:    { color: ALERT_RED, fill: ALERT_RED, fillOpacity: 0.16, weight: 1.6, opacity: 0.85 },
-  partial: { color: ALERT_RED, fill: ALERT_RED, fillOpacity: 0.14, weight: 1.5, opacity: 0.8 },
+  full:    { color: ALERT_EDGE, fill: ALERT_RED, fillOpacity: 0.16, weight: 1.7, opacity: 0.95 },
+  partial: { color: ALERT_EDGE, fill: ALERT_RED, fillOpacity: 0.14, weight: 1.6, opacity: 0.9 },
   none:    { color: '#30363d', fill: ALERT_RED, fillOpacity: 0,    weight: 0.5, opacity: 0.10 },
 };
 
@@ -900,34 +935,14 @@ function drawTrack(track, now, zoom) {
   const opacity = ageOpacity(t.at, now) * tier.dim;
 
   /*
-   * The path so far. Without it a flight reported at six towns reads as six aircraft;
-   * with it, it reads as one thing going somewhere. Suppressed for far flights at
-   * country zoom, where a dozen tails become spaghetti and say nothing.
+   * No route line, and no breadcrumbs.
+   *
+   * Drawing where a flight had been turned the map into a web of crossing lines that
+   * said little about where anything is now. `buildTracks` still does its work — it
+   * is why one drone is one marker rather than six — but its output is a position and
+   * a heading, not a drawing of the past. The count of merged sightings stays in the
+   * popup for anyone who wants it.
    */
-  const showTail = track.points.length > 1 && (track.rel.tier !== 'far' || zoom >= 8);
-  if (showTail) {
-    L.polyline(track.points.map((p) => [p.lat, p.lon]), {
-      color: spec.color,
-      weight: tier.rank === 0 ? 2.5 : 2,
-      opacity: opacity * 0.55,
-      interactive: false,
-    }).addTo(targetLayer);
-
-    // Small dots where it was, so the head is unmistakably the current position.
-    if (zoom >= 7) {
-      for (const p of track.points.slice(0, -1)) {
-        L.circleMarker([p.lat, p.lon], {
-          radius: 2.5,
-          color: spec.color,
-          weight: 0,
-          fillColor: spec.color,
-          fillOpacity: ageOpacity(p.at, now) * 0.5,
-          interactive: false,
-        }).addTo(targetLayer);
-      }
-    }
-  }
-
   const marker = L.marker([t.lat, t.lon], {
     icon: targetIcon(spec, t.course, t.count, t.relation, track.rel),
     opacity,
@@ -961,20 +976,6 @@ function drawTrack(track, now, zoom) {
 
   marker.addTo(targetLayer);
 
-  /*
-   * The origin dash is the only evidence of direction a single sighting has. With two
-   * or more points the track polyline already says it, and drawing both doubled every
-   * flight's lines.
-   */
-  if (track.points.length === 1 && t.fromLat !== null && t.fromLon !== null) {
-    L.polyline([[t.fromLat, t.fromLon], [t.lat, t.lon]], {
-      color: spec.color,
-      weight: 1.5,
-      opacity: opacity * 0.5,
-      dashArray: '4 5',
-      interactive: false,
-    }).addTo(targetLayer);
-  }
 }
 
 /*
