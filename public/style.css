@@ -205,6 +205,18 @@ body.sheet-open .leaflet-control-attribution {
 
 .zoomed-out .tgt-mark em { display: none; }
 
+/* A destination, not a position: hollow silhouette for something on its way, solid
+   for something reported overhead. The shape still says what is coming; the outline
+   says it has not arrived. */
+.heading svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+}
+
+.heading em { opacity: 0.85; }
+
 /* Launch sites read as a hollow burst, never a silhouette: the rays are stroked
    rather than filled, so the two cannot be confused at thumbnail size.
 

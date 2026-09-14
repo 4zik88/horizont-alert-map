@@ -131,22 +131,42 @@ function launchIcon(spec, count) {
  * dashed ring instead — pointing it north by default would invent a heading the
  * parser never extracted, and on this map a wrong direction is worse than none.
  */
-function targetIcon(spec, course, count) {
+/*
+ * Relations that say where the target IS, as opposed to where it is going.
+ *
+ * "курсом на Піщану" means it is flying toward Піщана and is not there — the town may
+ * not even be under alert yet. Drawing a solid aircraft on it says something is
+ * overhead that is not, which is the same error as putting a marker on a launch site.
+ * "над Піщаною" and "повз Піщану" do report a position.
+ */
+const POSITION_RELATIONS = new Set(['over', 'past', 'through']);
+
+function targetIcon(spec, course, count, relation) {
   const rotation = course === null ? 0 : course;
+  const heading = !POSITION_RELATIONS.has(relation);
+
+  // Unknown heading is drawn upright in a dashed ring rather than pointed north.
   const ring = course === null
     ? '<circle cx="12" cy="12" r="11" fill="none" stroke="currentColor" stroke-width="1.1"' +
       ' stroke-dasharray="2.6 2.6" opacity="0.75"/>'
     : '';
 
   const badge = count > 1 ? `<s>${count}</s>` : '';
+  /*
+   * A destination is drawn hollow and prefixed with an arrow: the shape still says
+   * what kind of thing is coming, the outline says it has not arrived. A filled
+   * silhouette is reserved for a reported position.
+   */
+  const cls = heading ? 'tgt-mark heading' : 'tgt-mark';
+  const label = heading ? `→ ${spec.short}` : spec.short;
 
   return L.divIcon({
     className: 'tgt',
     html:
-      `<span class="tgt-mark" style="--c:${spec.color}">` +
+      `<span class="${cls}" style="--c:${spec.color}">` +
       `<svg viewBox="0 0 24 24" width="26" height="26" style="transform:rotate(${rotation}deg)">` +
       `${ring}<path d="${spec.path}"/></svg>` +
-      `<em>${spec.short}</em>${badge}</span>`,
+      `<em>${label}</em>${badge}</span>`,
     iconSize: [0, 0],
     iconAnchor: [0, 0],
   });
@@ -637,7 +657,7 @@ function drawTargets() {
     const opacity = ageOpacity(t.at, now);
 
     const marker = L.marker([t.lat, t.lon], {
-      icon: targetIcon(spec, t.course, t.count),
+      icon: targetIcon(spec, t.course, t.count, t.relation),
       opacity,
       riseOnHover: true,
       // Fresher targets sit above older, faded ones where they overlap.
@@ -645,9 +665,17 @@ function drawTargets() {
     });
 
     const near = me ? Math.round(distanceKm(me.lat, me.lon, t.lat, t.lon)) : null;
+    /*
+     * Say plainly which of the two this is. The icon carries it too, but the popup is
+     * where someone checks before deciding whether to move.
+     */
+    const where = POSITION_RELATIONS.has(t.relation)
+      ? (t.label ? `над ${escapeHtml(t.label)}` : '')
+      : (t.label ? `курс на ${escapeHtml(t.label)}<br><span class="muted">ще не там</span>` : '');
+
     marker.bindPopup(
       `<strong>${spec.label}${t.count > 1 ? ' ×' + t.count : ''}</strong><br>` +
-      (t.label ? escapeHtml(t.label) + '<br>' : '') +
+      (where ? where + '<br>' : '') +
       `<span class="muted">${minutesAgo(t.at, now)} тому</span>` +
       (t.reports > 1 ? `<span class="muted"> · ${t.reports} відміток на маршруті</span>` : '') +
       (near !== null ? `<br><span class="muted">~${near} км від вас</span>` : ''),
