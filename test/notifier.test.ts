@@ -4,6 +4,7 @@ import { AppState, Users } from '../src/db/users.js';
 import { Notifier, DEFAULT_NOTIFIER } from '../src/notify/notifier.js';
 import type { TelegramApi } from '../src/bot/api.js';
 import { escapeHtml, formatAlertBatch, type AlertLine } from '../src/bot/format.js';
+import { raionAt } from '../src/geo/raions.js';
 import { memoryDb } from './helpers.js';
 
 const NOW = 1_700_000_000_000;
@@ -33,7 +34,10 @@ function setup() {
 
 function addUser(users: Users, chatId: number, lat: number, lon: number, radiusKm = 40) {
   users.register(chatId, `u${chatId}`, NOW);
-  users.saveLocation({ chatId, lat, lon, kind: 'static', oblast: 'sumska', liveUntil: null, now: NOW });
+  users.saveLocation({
+    chatId, lat, lon, kind: 'static', oblast: 'sumska', raion: 'охтирський',
+    liveUntil: null, now: NOW,
+  });
   users.updateRadius(chatId, radiusKm, NOW);
 }
 
@@ -113,10 +117,67 @@ describe('Notifier', () => {
     state.setNumber('notify_target_cursor', 0, NOW);
     await notifier.runOnce(NOW + 60_000);
     assert.equal(sent.length, 1, 'still just the one message');
+  });
+
+  /*
+   * The bug the reader actually hit: "БпЛА — Козятин, ~1 км від вас" five times in
+   * fourteen minutes. The ledger was keyed on the target row id, and every fresh
+   * message about the same drone — from any of the three channels — created a new row
+   * with a new id, so the cooldown had nothing to match against and never fired once.
+   */
+  test('a second report of the same thing is not a second warning', async () => {
+    const { db, users, state, notifier, sent } = setup();
+    addUser(users, 100, 50.31, 34.6);
+    addTarget(db);
+
+    await notifier.runOnce(NOW);
+    assert.equal(sent.length, 1);
+
+    // A different row, same drone over the same town — which is what the channels send.
+    addTarget(db);
+    state.setNumber('notify_target_cursor', 0, NOW);
+    await notifier.runOnce(NOW + 2 * 60_000);
+    assert.equal(sent.length, 1, 'a new row is not new information');
+  });
+
+  /*
+   * Past the cooldown, a warning still has to have changed. A drone circling one town
+   * produces the identical sentence every poll, and repeating it is how a reader
+   * learns to ignore the bot.
+   */
+  test('an unchanged warning waits out the longer repeat window', async () => {
+    const { db, users, state, notifier, sent } = setup();
+    addUser(users, 100, 50.31, 34.6);
+    addTarget(db);
+
+    await notifier.runOnce(NOW);
+    assert.equal(sent.length, 1);
 
     state.setNumber('notify_target_cursor', 0, NOW);
     await notifier.runOnce(NOW + 6 * 60_000);
-    assert.equal(sent.length, 2, 'allowed again once the cooldown has passed');
+    assert.equal(sent.length, 1, 'past the cooldown, but it says nothing new');
+
+    state.setNumber('notify_target_cursor', 0, NOW);
+    await notifier.runOnce(NOW + 21 * 60_000);
+    assert.equal(sent.length, 2, 'still there after twenty minutes is worth saying again');
+  });
+
+  test('a warning that has moved closer is sent as soon as the cooldown allows', async () => {
+    const { db, users, state, notifier, sent } = setup();
+    addUser(users, 100, 50.31, 34.6);
+    addTarget(db);
+
+    await notifier.runOnce(NOW);
+    assert.equal(sent.length, 1);
+    const first = /~(\d+) км/.exec(sent[0]!.text)![1]!;
+
+    // Same town, materially nearer: the reader needs to hear this one.
+    addTarget(db, { to_lat: 50.315, to_lon: 34.61 });
+    state.setNumber('notify_target_cursor', 0, NOW);
+    await notifier.runOnce(NOW + 6 * 60_000);
+
+    assert.equal(sent.length, 2, 'a real change is not held back');
+    assert.notEqual(/~(\d+) км/.exec(sent[1]!.text)![1]!, first);
   });
 
   // A mass attack can match one user against many targets at once. Separate messages
@@ -175,13 +236,27 @@ describe('Notifier', () => {
 
 describe('formatAlertBatch', () => {
   const line = (over: Partial<AlertLine> = {}): AlertLine => ({
-    type: 'uav', count: 1, toName: 'Охтирка', distanceKm: 20, reason: 'in_radius', ...over,
+    type: 'uav', count: 1, toName: 'Охтирка', distanceKm: 20, etaMin: null,
+    reason: 'in_radius', ...over,
   });
 
-  test('formats a single alert exactly as the spec asks', () => {
+  /*
+   * Each number is tied to the thing it measures. "курс на Жашків, ~201 км від вас"
+   * was read as "Zhashkiv is 201 km away" — it is 106; the 201 was how far the drone
+   * was. The distance now sits in brackets against the name it belongs to, and the
+   * time-to-reach is labelled separately.
+   */
+  test('names the place, then its distance, then the time to the reader', () => {
     assert.equal(
-      formatAlertBatch([line({ reason: 'heading_towards', distanceKm: 23.4 })]),
-      '⚠️ БпЛА, курс на Охтирка, ~23 км від вас',
+      formatAlertBatch([line({ reason: 'heading_towards', distanceKm: 23.4, etaMin: 12.2 })]),
+      '⚠️ БпЛА — курс на Охтирка (~23 км від вас) · до вас ~12 хв',
+    );
+  });
+
+  test('a target already in the radius gets no time-to-reach', () => {
+    assert.equal(
+      formatAlertBatch([line({ distanceKm: 3 })]),
+      '⚠️ БпЛА — Охтирка (~3 км від вас)',
     );
   });
 
@@ -231,6 +306,7 @@ describe('formatAlertLine — HTML safety', () => {
       count: 1,
       toName: 'Ново<b>Село & Co',
       distanceKm: 12,
+      etaMin: null,
       reason: 'in_radius',
     };
     const text = formatAlertBatch([line]);
@@ -240,5 +316,36 @@ describe('formatAlertLine — HTML safety', () => {
 
   test('leaves ordinary names untouched', () => {
     assert.equal(escapeHtml("Кам'янець-Подільський"), "Кам'янець-Подільський");
+  });
+});
+
+/*
+ * Anyone already using the bot shared a location before alerts were keyed on raions,
+ * so their raion is null — and a null raion falls back silently to the oblast-wide
+ * message this work replaced. Leaving it to the next location they send means the
+ * people already relying on the bot are the last to get the fix.
+ */
+describe('Users.backfillRaions', () => {
+  test('fills a raion for a user who already shared a location', () => {
+    const { db, users } = setup();
+    addUser(users, 100, 49.716, 28.8318);
+    db.prepare('UPDATE users SET raion = NULL').run();
+
+    const filled = users.backfillRaions(
+      (lat, lon) => raionAt(lat, lon)?.match ?? null,
+      NOW,
+    );
+
+    assert.equal(filled, 1);
+    assert.equal(users.get(100)?.raion, 'хмільницький');
+  });
+
+  test('leaves a user outside every polygon alone rather than guessing', () => {
+    const { db, users } = setup();
+    addUser(users, 100, 50.4501, 30.5234); // Kyiv city: its own unit, no raion polygon
+    db.prepare('UPDATE users SET raion = NULL').run();
+
+    assert.equal(users.backfillRaions((lat, lon) => raionAt(lat, lon)?.match ?? null, NOW), 0);
+    assert.equal(users.get(100)?.raion, null);
   });
 });

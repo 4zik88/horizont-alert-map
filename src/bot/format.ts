@@ -1,7 +1,7 @@
 import type { TargetType } from '../parser/targetTypes.js';
 import type { MatchReason } from '../notify/proximity.js';
 
-/** Bot copy is Ukrainian, matching the map and the settlement names themselves. */
+/** Bot copy is Ukrainian, matching the settlement names themselves. */
 const TYPE_LABELS: Record<TargetType, string> = {
   uav: 'БпЛА',
   jet_uav: 'Реактивний БпЛА',
@@ -37,23 +37,42 @@ export interface AlertLine {
   type: TargetType;
   count: number;
   toName: string | null;
+  /** Distance to the place this line names — the number printed beside the name. */
   distanceKm: number;
+  /** Minutes until it could reach the reader, when it is pointed at them. */
+  etaMin: number | null;
   reason: MatchReason;
 }
 
-/** "⚠️ БпЛА, курс на Охтирка, ~23 км від вас" — the format the spec specified. */
+/**
+ * One warning, in the form the reader will actually parse at 04:00.
+ *
+ * "⚠️ Реактивний БпЛА, курс на Жашків, ~201 км від вас" was read — correctly — as
+ * "Zhashkiv is 201 km away". It is 106. The 201 was how far the drone was, a
+ * different fact printed under the name of the town. Two numbers were being collapsed
+ * into one, and which one you got depended on why the alert fired.
+ *
+ * So each number is now tied to the thing it measures: the distance sits in brackets
+ * against the place name, and the time-to-reach is labelled "до вас" and appears only
+ * when the target is actually pointed at the reader.
+ */
 export function formatAlertLine(line: AlertLine): string {
   const count = line.count > 1 ? ` ×${line.count}` : '';
+  const km = `~${Math.round(line.distanceKm)} км від вас`;
   const name = line.toName === null ? null : escapeHtml(line.toName);
+
   const where = name
     ? line.reason === 'in_radius'
-      ? `район ${name}`
-      : `курс на ${name}`
-    : line.reason === 'in_radius'
-      ? 'поруч із вами'
-      : 'курс у ваш бік';
+      ? `${name} (${km})`
+      : `курс на ${name} (${km})`
+    : `${km}`;
 
-  return `⚠️ ${typeLabel(line.type)}${count}, ${where}, ~${Math.round(line.distanceKm)} км від вас`;
+  // Under a minute is "вже поруч", not "~0 хв".
+  const eta = line.etaMin === null ? ''
+    : line.etaMin < 1 ? ' · вже поруч'
+    : ` · до вас ~${Math.round(line.etaMin)} хв`;
+
+  return `⚠️ ${typeLabel(line.type)}${count} — ${where}${eta}`;
 }
 
 /**
@@ -81,7 +100,7 @@ function dedupe(lines: AlertLine[]): AlertLine[] {
   const best = new Map<string, AlertLine>();
 
   for (const line of lines) {
-    const key = `${line.type}|${line.toName ?? ''}|${line.reason}`;
+    const key = subjectOf(line);
     const current = best.get(key);
     if (!current || line.distanceKm < current.distanceKm) {
       best.set(key, current ? { ...line, count: Math.max(line.count, current.count) } : line);
@@ -93,11 +112,28 @@ function dedupe(lines: AlertLine[]): AlertLine[] {
   return [...best.values()].sort((a, b) => a.distanceKm - b.distanceKm);
 }
 
+/**
+ * What a warning is *about*, as the reader would say it: this kind of thing, over
+ * this place, for this reason.
+ *
+ * Deliberately not the target's row id. Three channels reporting one drone produce
+ * three rows, and each fresh message about the same drone produces another — so an
+ * id-keyed anti-spam ledger never suppressed anything, and "БпЛА — Козятин, ~1 км від
+ * вас" arrived five times in fourteen minutes. The spec's rule is one message per
+ * target per five minutes, and to the person reading it a target is one drone over
+ * one town, not a row.
+ */
+export function subjectOf(line: Pick<AlertLine, 'type' | 'toName' | 'reason'>): string {
+  return `${line.type}|${line.toName ?? ''}|${line.reason}`;
+}
+
 export const HELP = [
   '🛡 <b>Horizont</b> — сповіщення про повітряні цілі.',
   '',
   'Надішліть свою геолокацію (скріпка → Location), щоб отримувати попередження.',
   'Live-локація оновлюється автоматично, поки вона активна.',
+  '',
+  'Тривоги приходять по <b>вашому району</b>, а не по всій області.',
   '',
   '<b>Команди</b>',
   '/radius 30 — радіус сповіщення в км (типово 40)',

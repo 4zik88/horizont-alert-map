@@ -101,7 +101,7 @@ async function main(): Promise<void> {
         if (match) {
           lines.push({
             type: view.type, count, toName: view.toName,
-            distanceKm: match.distanceKm, reason: match.reason,
+            distanceKm: match.distanceKm, etaMin: match.etaMin, reason: match.reason,
           });
         }
       }

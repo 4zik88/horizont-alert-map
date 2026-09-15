@@ -193,6 +193,59 @@ UPDATE oblast_alerts SET level = CASE WHEN active = 1 THEN 'full' ELSE 'none' EN
 ALTER TABLE oblast_alerts ADD COLUMN areas TEXT NOT NULL DEFAULT '[]';
 `,
   },
+  {
+    version: 6,
+    name: 'notice_ledger',
+    sql: `
+-- ─── notice_ledger: anti-spam, keyed on what the reader sees ─────────────────
+-- Replaces the target-id ledger, which never suppressed anything. Three channels
+-- reporting one drone produce three target rows, and every fresh message about the
+-- same drone produces another — so each was a new id, the cooldown never matched, and
+-- "БпЛА — Козятин, ~1 км від вас" arrived five times in fourteen minutes.
+--
+-- The key is the subject as the reader would state it: this kind of thing, over this
+-- place, for this reason. distance_km is kept so an unchanged warning can be held
+-- back longer than one that has actually moved.
+CREATE TABLE notice_ledger (
+  chat_id     INTEGER NOT NULL,
+  subject     TEXT    NOT NULL,
+  distance_km REAL    NOT NULL,
+  sent_at     INTEGER NOT NULL,
+  PRIMARY KEY (chat_id, subject)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX ix_notice_ledger_sent_at ON notice_ledger(sent_at);
+
+-- The old table cascaded from targets, which is how it was pruned. The new one has no
+-- such anchor and is pruned by age instead; see src/maintenance/retention.ts.
+DROP TABLE notifications;
+`,
+  },
+  {
+    version: 7,
+    name: 'user_raion',
+    sql: `
+-- Alerts are declared per raion, and a raion is about an hour's drive across, so an
+-- oblast-wide "Повітряна тривога — Вінницька обл." mostly announced an emergency
+-- somewhere the reader was not. Derived by point-in-polygon from the coordinates
+-- already held, and null outside every polygon (Kyiv city), where the oblast-level
+-- message is the correct one anyway.
+ALTER TABLE users ADD COLUMN raion TEXT;
+
+-- Per-raion alert state, for the same reason oblast_alerts exists: only transitions
+-- are worth a message, and without the last known state every poll looks like a
+-- fresh alert start.
+CREATE TABLE raion_alerts (
+  raion      TEXT    PRIMARY KEY,
+  oblast     TEXT    NOT NULL,
+  active     INTEGER NOT NULL DEFAULT 0,
+  changed_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX ix_raion_alerts_oblast ON raion_alerts(oblast);
+`,
+  },
 ];
 
 export function migrate(db: Database, onApplied?: (m: Migration) => void): number {

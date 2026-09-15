@@ -19,7 +19,7 @@ export interface Oblast {
   centreLat: number;
   centreLon: number;
   /**
-   * Number of raions the oblast contains, from `public/data/raions.geojson`.
+   * Number of raions the oblast contains, from `seed/raions.geojson`.
    *
    * This is what separates the yellow level from the red one on the public alert
    * feed: an air-raid alert naming every raion of an oblast is an oblast-wide

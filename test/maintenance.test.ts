@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import Database from 'better-sqlite3';
-import { Maintenance, backupName, prune, pruneMessages, runBackup } from '../src/maintenance/index.js';
+import { Maintenance, backupName, prune, pruneMessages, runBackup, pruneNoticeLedger } from '../src/maintenance/index.js';
 import { Repo } from '../src/db/repo.js';
 import { migrate } from '../src/db/migrations.js';
 import { memoryDb } from './helpers.js';
@@ -167,5 +167,25 @@ describe('maintenance schedule', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/*
+ * The subject-keyed ledger has no foreign key to cascade from, unlike the target-id
+ * table it replaced. Without an age sweep it would grow for the life of the volume.
+ */
+describe('pruneNoticeLedger', () => {
+  test('forgets warnings older than a day and keeps recent ones', () => {
+    const db = memoryDb();
+    const now = 1_700_000_000_000;
+    const insert = db.prepare(
+      `INSERT INTO notice_ledger (chat_id, subject, distance_km, sent_at) VALUES (?, ?, ?, ?)`,
+    );
+    insert.run(1, 'uav|Охтирка|in_radius', 12, now - 2 * 86_400_000);
+    insert.run(1, 'uav|Суми|in_radius', 30, now - 60_000);
+
+    assert.equal(pruneNoticeLedger(db, now), 1);
+    const left = db.prepare('SELECT subject FROM notice_ledger').all() as { subject: string }[];
+    assert.deepEqual(left.map((r) => r.subject), ['uav|Суми|in_radius']);
   });
 });

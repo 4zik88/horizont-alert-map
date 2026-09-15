@@ -9,8 +9,8 @@ import { generateForms, normalise } from '../parser/morphology.js';
  *
  * Without this a fresh deploy is silently useless. Railway starts with an empty
  * volume, migrations create the tables, the service reports healthy — and the parser
- * resolves no place name at all, so every message lands in the feed as text and the
- * map draws nothing. Nothing errors; it just never works.
+ * resolves no place name at all, so no target ever gets coordinates and no warning is
+ * ever sent. Nothing errors; it just never works.
  *
  * Rebuilding from Overpass is not a viable boot step: it is heavily rate-limited and
  * took hours of retries to assemble here. So the 5,756 settlements ship with the

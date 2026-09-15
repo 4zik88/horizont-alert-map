@@ -1,12 +1,17 @@
 # horizont-alert
 
 Private air-target tracking for Ukraine. Closed tool for a handful of people — no
-registration, no indexing, map reachable only via a secret token in the URL.
+registration, no public surface at all.
 
-Polls the public HTML preview of three Telegram channels, extracts structured
-targets (type, direction, settlement with coordinates), warns a closed list of users
-by Telegram DM when a target is near them or heading their way, and serves a private
-Leaflet PWA map.
+Polls the public HTML preview of three Telegram channels, extracts structured targets
+(type, direction, settlement with coordinates), and warns a closed list of users by
+Telegram DM when a target is near them or heading their way. Air-raid alerts are
+delivered per **raion**, from the location each user shared with the bot.
+
+Telegram is the whole product. There was a Leaflet PWA map behind a secret link; it
+was removed. It was a second surface to keep correct — its own auth, its own cookie-jar
+behaviour on iOS, its own rendering rules — for information the bot already puts on the
+phone that is already in the reader's hand. `git log` has it if it is ever wanted back.
 
 ## Sources
 
@@ -74,6 +79,12 @@ src/telegram/parsePage.ts   pure HTML -> messages; the tricky part
 src/telegram/ingest.ts      messages -> DB, idempotent, edit-aware
 src/telegram/poller.ts      the loop: jitter, backoff, gap-fill, shutdown
 src/telegram/policy.ts      pure scheduling decisions, unit-tested
+src/parser/rules.ts         message text -> targets; the tricky part
+src/geo/raions.ts           point-in-polygon; which raion a reader is in
+src/notify/proximity.ts     pure: does this target concern this user
+src/notify/notifier.ts      matching, batching, the anti-spam ledger
+src/alerts/watcher.ts       raion air-raid transitions -> DMs
+src/http/server.ts          /healthz, and nothing else
 ```
 
 ## Things the markup will do to you
@@ -234,78 +245,68 @@ and is then worse than useless. Three guards, all tunable by env:
 | `NOTIFY_COURSE_TOLERANCE_DEG` | 30 | narrow corridor, not a broad sweep |
 | `NOTIFY_LEAD_MINUTES` | 25 | further out and the course will likely change |
 
-Message format is the one the spec asked for:
-`⚠️ БпЛА, курс на Охтирка, ~23 км от вас`
+Message format:
+`⚠️ Реактивний БпЛА — курс на Жашків (~106 км від вас) · до вас ~23 хв`
 
-**Anti-spam** works on three levels. The spec's rule — one message per target per
-user per 5 minutes — is enforced by the `notifications` ledger, which survives
-restarts so a redeploy cannot re-alert everyone. Beyond that, a user's matches in one
-pass are **combined into a single message** rather than sent separately (a mass attack
-can match one person against dozens of targets, which the per-target rule does not
-bound), and duplicate reports of the same target from different channels collapse to
-one line, keeping the nearest reading.
+**Each number is tied to the thing it measures.** The earlier format printed one
+distance for both, and which fact you got depended on why the alert had fired:
+"курс на Жашків, ~201 км від вас" was the distance to the *drone*, printed under the
+name of the *town*, which is 106 km away. The distance now sits in brackets against
+the name it belongs to; the time-to-reach is labelled separately and appears only when
+the target is actually pointed at the reader.
+
+**Anti-spam** works on three levels.
+
+The spec's rule — one message per target per user per 5 minutes — is enforced by the
+`notice_ledger`, which survives restarts so a redeploy cannot re-alert everyone. It is
+keyed on the *subject* as the reader would state it — this kind of thing, over this
+place, for this reason — and not on the target row id. Keying it on the id meant it
+never suppressed anything at all: three channels reporting one drone produce three
+rows, every fresh message about that drone produces another, and each new id missed
+the ledger. "БпЛА — Козятин, ~1 км від вас" arrived five times in fourteen minutes.
+
+Past the cooldown a warning still has to have *changed* — the distance must have moved
+by 25% — or it waits out a 20-minute repeat window. A drone circling one town produces
+the identical sentence every poll, and repeating it is how a reader learns to ignore
+the bot.
+
+Finally, a user's matches in one pass are **combined into a single message** rather
+than sent separately, and duplicate reports of the same target from different channels
+collapse to one line, keeping the nearest reading.
 
 Only what is actually delivered is recorded, so a failed send is retried rather than
-silently swallowed by the cooldown.
+silently swallowed by the cooldown. The ledger is pruned by age rather than by
+cascade, since it is no longer anchored to a target row.
 
-### Oblast alerts
+### Raion alerts
 
-Separate from target warnings: air-raid start and all-clear for the oblast the user is
-in, polled from alerts.in.ua. The user's oblast is derived from the nearest gazetteer
-settlement, whose oblast tags come from official KATOTTH codes.
+Separate from target warnings: air-raid start and all-clear for the **raion** the user
+is in, polled from alerts.in.ua — which declares them per raion in the first place.
 
-Only *transitions* are messaged, and the last state per oblast is persisted — without
-that, every poll after a restart would look like a fresh alert. An oblast seen for the
+An oblast is roughly the size of a small country. Announcing per oblast meant a reader
+in Kozyatyn heard about anything happening anywhere in Vinnytsia oblast, and — the
+dangerous direction — could get an all-clear while their own raion was still under
+warning.
+
+The user's raion is a point-in-polygon lookup against `seed/raions.geojson` (161
+polygons, `src/geo/raions.ts`), done once when they share a location rather than on
+every poll. The oblast is still derived from the nearest gazetteer settlement, and is
+the fallback for a point inside no polygon — Kyiv city, which is its own administrative
+unit, so the oblast-level message is the correct one there anyway.
+
+A warning naming only hromadas or a city resolves to no raion polygon. That warning is
+still real, so the whole oblast is treated as warned: the error falls toward telling
+someone rather than leaving them unwarned.
+
+Only *transitions* are messaged, and the last state per raion is persisted — without
+that, every poll after a restart would look like a fresh alert. A raion seen for the
 first time is recorded silently, so a fresh database does not announce every alert
 currently in progress. A truncated API response is ignored rather than read as "all
 clear everywhere", which would fire a false all-clear to everyone at once.
 
 Without `ALERTS_IN_UA_TOKEN` this part simply does not start.
 
-## The map (step 4)
-
-A single Leaflet page, no bundler, installable to a phone home screen. Reachable only
-through a secret link.
-
-```bash
-npm run map:token         # prints a token and the one-time link
-npm run build:boundaries  # oblast polygons for the alert overlay (one-off, resumable)
-npm run build:icons       # PWA icons (already committed)
-```
-
-### Access
-
-The token appears once, in the path (`/t/<token>`), is exchanged for an httpOnly
-cookie, and the browser is redirected to a clean URL. A token left in a query string
-leaks through the `Referer` header to every tile request and into Railway's access
-logs; this way it never travels. Anything unauthorised gets a flat **404, never 403** —
-a 403 would confirm that a valid link exists to be guessed. `/healthz` and
-`robots.txt` stay public, and every response carries `noindex`.
-
-### On the map
-
-- **Alert polygons** shaded by level: red for a declared air-raid alert, yellow for a
-  threat without one.
-- **Target silhouettes** rotated to their course — a delta wing for a drone, a finned
-  cylinder for a missile, a swept airframe for aircraft — each labelled with its type.
-  A target with no known heading is drawn upright inside a dashed ring rather than
-  pointed north, because inventing a direction is worse than admitting none.
-- **Your position** from the browser, with your radius circle. It is computed in the
-  page and **never sent to the server**; the last fix is remembered in `localStorage`
-  so a reload does not blank it, and is discarded after 12 hours rather than drawing a
-  stale circle.
-- **The feed**, carrying parsed and unparsed messages alike — unresolved text appears
-  as text, with no marker.
-- Targets fade as they age and are gone by 30 minutes.
-
-Tiles come from OpenStreetMap, darkened with a CSS filter rather than a dark-themed
-provider, because every free dark basemap now requires an API key that can expire or
-be revoked. Swap providers with `MAP_TILE_URL` / `MAP_TILE_ATTRIBUTION` /
-`MAP_TILE_DARKEN` — no code change. Note that a `no-referrer` policy gets tile
-requests rejected: the page sends `strict-origin`, which identifies it without
-revealing any path.
-
-### Where alert data comes from
+## Where alert data comes from
 
 Default is **alerts.in.ua's public situation report** (`/v3/alerts/active.md`) —
 published for unauthenticated use, continuously updated, and the only keyless source
@@ -317,14 +318,14 @@ change was from 2022.
 
 Set `ALERTS_IN_UA_TOKEN` to use their tokened API instead; `ALERTS_PROVIDER` forces a
 specific source. A report whose shape is unrecognised yields *nothing* rather than an
-empty alert map, since an empty map would read as a nationwide all-clear and fire a
+empty alert set, since an empty set would read as a nationwide all-clear and fire a
 false відбій to every user at once.
 
 ## Constraints
 
 - **No air-defence positions, no impacts.** Messages matching the deny-list in
-  `src/sensitive.ts` are flagged `is_sensitive` at ingest; they must never become map
-  targets or reach the feed. The raw text is still stored so a false positive is
+  `src/sensitive.ts` are flagged `is_sensitive` at ingest; they must never become
+  targets or reach anyone. The raw text is still stored so a false positive is
   recoverable — the flag is advisory and deliberately over-broad.
 - **User coordinates live only in SQLite.** They are never logged: `src/logger.ts`
   redacts `lat`, `lon` and `chat_id` paths. The bot never echoes a location back
@@ -335,5 +336,7 @@ false відбій to every user at once.
 
 ## Possible next steps
 
-- Raion-level alert polygons (the report carries them; only oblasts are drawn today).
-- Map: alert polygons, target markers with course arrows, mobile-first PWA.
+- **Hromada-level warnings.** Sub-raion alerts (the Nikopol area is the usual case)
+  name no polygon, so the whole oblast is treated as warned. A hromada → raion table
+  would narrow those to the right raion.
+- **Quiet hours.** Nothing currently distinguishes 03:00 from 15:00.

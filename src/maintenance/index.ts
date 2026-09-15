@@ -2,7 +2,7 @@ import type { Db } from '../db/index.js';
 import { AppState } from '../db/users.js';
 import { logger } from '../logger.js';
 import { runBackup, type BackupOptions } from './backup.js';
-import { pruneMessages } from './retention.js';
+import { pruneMessages, pruneNoticeLedger } from './retention.js';
 
 const LAST_RUN_KEY = 'maintenance_last_run';
 
@@ -83,6 +83,7 @@ export class Maintenance {
     try {
       runBackup(this.db, this.opts.backup, now);
       pruneMessages(this.db, this.opts.retentionMs, now);
+      pruneNoticeLedger(this.db, now);
       this.state.setNumber(LAST_RUN_KEY, now, now);
       return true;
     } finally {
@@ -92,4 +93,4 @@ export class Maintenance {
 }
 
 export { runBackup, prune, backupName } from './backup.js';
-export { pruneMessages } from './retention.js';
+export { pruneMessages, pruneNoticeLedger } from './retention.js';

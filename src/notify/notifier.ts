@@ -3,7 +3,7 @@ import { AppState, Users } from '../db/users.js';
 import { logger } from '../logger.js';
 import type { TargetType } from '../parser/targetTypes.js';
 import { TelegramApi, trySend } from '../bot/api.js';
-import { formatAlertBatch, type AlertLine } from '../bot/format.js';
+import { formatAlertBatch, subjectOf, type AlertLine } from '../bot/format.js';
 import {
   DEFAULT_PROXIMITY,
   matchTarget,
@@ -17,6 +17,17 @@ export interface NotifierOptions {
   intervalMs: number;
   /** Spec rule: at most one message about a given target to a given user per window. */
   cooldownMs: number;
+  /**
+   * How long a warning that says nothing new is held back.
+   *
+   * The cooldown alone still let a drone loitering over one town produce the same
+   * sentence every five minutes. A line whose distance has not moved carries no
+   * information the reader does not already have, so it waits longer; a line that has
+   * changed is released as soon as the cooldown allows.
+   */
+  repeatMs: number;
+  /** How much the distance must change for a warning to count as new, as a fraction. */
+  materialChange: number;
   batchSize: number;
   proximity: Omit<ProximityOptions, 'now'>;
 }
@@ -24,6 +35,8 @@ export interface NotifierOptions {
 export const DEFAULT_NOTIFIER: NotifierOptions = {
   intervalMs: 15_000,
   cooldownMs: 5 * 60_000,
+  repeatMs: 20 * 60_000,
+  materialChange: 0.25,
   batchSize: 300,
   proximity: DEFAULT_PROXIMITY,
 };
@@ -80,12 +93,13 @@ export class Notifier {
     `);
 
     this.selectRecentNotice = db.prepare(
-      `SELECT sent_at FROM notifications WHERE chat_id = ? AND target_id = ?`,
+      `SELECT sent_at, distance_km FROM notice_ledger WHERE chat_id = ? AND subject = ?`,
     );
 
     this.recordNotice = db.prepare(`
-      INSERT INTO notifications (chat_id, target_id, sent_at) VALUES (@chatId, @targetId, @now)
-      ON CONFLICT(chat_id, target_id) DO UPDATE SET sent_at = @now
+      INSERT INTO notice_ledger (chat_id, subject, distance_km, sent_at)
+      VALUES (@chatId, @subject, @distanceKm, @now)
+      ON CONFLICT(chat_id, subject) DO UPDATE SET distance_km = @distanceKm, sent_at = @now
     `);
   }
 
@@ -134,7 +148,7 @@ export class Notifier {
       // Group by user so a burst becomes one message rather than a dozen. A mass
       // attack can match a single user against many targets at once, and the
       // per-target cooldown alone does not bound that.
-      const pending = new Map<number, { lines: AlertLine[]; targetIds: number[] }>();
+      const pending = new Map<number, { lines: AlertLine[] }>();
 
       for (const row of targets) {
         const target = toTargetView(row);
@@ -147,17 +161,19 @@ export class Notifier {
             proximity,
           );
           if (!match) continue;
-          if (this.recentlyNotified(user.chat_id, target.id, now)) continue;
 
-          const bucket = pending.get(user.chat_id) ?? { lines: [], targetIds: [] };
-          bucket.lines.push({
+          const line: AlertLine = {
             type: target.type,
             count: row.count,
             toName: target.toName,
             distanceKm: match.distanceKm,
+            etaMin: match.etaMin,
             reason: match.reason,
-          });
-          bucket.targetIds.push(target.id);
+          };
+          if (this.alreadySaid(user.chat_id, line, now)) continue;
+
+          const bucket = pending.get(user.chat_id) ?? { lines: [] };
+          bucket.lines.push(line);
           pending.set(user.chat_id, bucket);
         }
       }
@@ -173,8 +189,13 @@ export class Notifier {
         // Record only what was actually delivered, so a failed send is retried on the
         // next pass rather than silently swallowed by the cooldown.
         this.db.transaction(() => {
-          for (const targetId of bucket.targetIds) {
-            this.recordNotice.run({ chatId, targetId, now });
+          for (const line of bucket.lines) {
+            this.recordNotice.run({
+              chatId,
+              subject: subjectOf(line),
+              distanceKm: line.distanceKm,
+              now,
+            });
           }
         })();
       }
@@ -193,9 +214,32 @@ export class Notifier {
     }
   }
 
-  private recentlyNotified(chatId: number, targetId: number, now: number): boolean {
-    const row = this.selectRecentNotice.get(chatId, targetId) as { sent_at: number } | undefined;
-    return row !== undefined && now - row.sent_at < this.opts.cooldownMs;
+  /**
+   * Has this reader already been told this, recently enough that saying it again would
+   * be noise rather than news?
+   *
+   * Two gates. The cooldown is the spec's floor and nothing crosses it. Past that, a
+   * warning still has to have *changed* — a drone circling one town for an hour
+   * produces the identical sentence every poll, and repeating it teaches the reader to
+   * ignore the bot. An unchanged line waits out the longer repeat window instead.
+   */
+  private alreadySaid(chatId: number, line: AlertLine, now: number): boolean {
+    const row = this.selectRecentNotice.get(chatId, subjectOf(line)) as
+      { sent_at: number; distance_km: number } | undefined;
+    if (row === undefined) return false;
+
+    const since = now - row.sent_at;
+    if (since < this.opts.cooldownMs) return true;
+    if (since >= this.opts.repeatMs) return false;
+
+    // Guard the division: a target reported directly overhead has distance 0, and
+    // anything moving away from 0 is a change worth hearing about.
+    const previous = row.distance_km;
+    const moved = previous <= 0
+      ? line.distanceKm > 0
+      : Math.abs(line.distanceKm - previous) / previous >= this.opts.materialChange;
+
+    return !moved;
   }
 }
 

@@ -59,8 +59,23 @@ export type MatchReason = 'in_radius' | 'heading_towards';
 
 export interface Match {
   reason: MatchReason;
-  /** Distance from the user to the target's reported position, km. */
+  /**
+   * Distance from the user to the place the warning *names*, km.
+   *
+   * This is the number the message prints, because it is the one the reader will
+   * attach to the name they just read. "курс на Жашків, ~201 км від вас" said Zhashkiv
+   * was 201 km away; it is 106. The 201 was the distance to where the drone then was,
+   * a different fact reported under the wrong label.
+   */
   distanceKm: number;
+  /** Distance from the user to where the target actually is, km. */
+  targetKm: number;
+  /**
+   * Minutes for the target to cover `targetKm` at this type's cruise speed, or null
+   * when it is not pointed at the user — a time-to-reach for something flying away
+   * would be a number with no meaning.
+   */
+  etaMin: number | null;
 }
 
 /** Smallest absolute angle between two bearings, 0-180. */
@@ -91,16 +106,28 @@ export function matchTarget(
   const position = positionOf(target);
   if (!position) return undefined;
 
+  const targetKm = distanceKm(user.lat, user.lon, position.lat, position.lon);
+
+  /*
+   * The distance that gets printed belongs to the place that gets named.
+   *
+   * `named` is the destination when the line stated one, because that is what the
+   * message says — "курс на Жашків". Without a destination the message names nothing
+   * and falls back to the target's own position, which is then also what it measures.
+   */
+  const named = target.toLat !== null && target.toLon !== null
+    ? distanceKm(user.lat, user.lon, target.toLat, target.toLon)
+    : targetKm;
+
+  const minutesToUser = (km: number) => (km / TYPE_SPEED_KMH[target.type]) * 60;
+
   // Closest of the two known points: a target heading for a town 5 km away concerns
   // the user even if it is currently 200 km out.
-  const distances: number[] = [distanceKm(user.lat, user.lon, position.lat, position.lon)];
-  if (target.toLat !== null && target.toLon !== null) {
-    distances.push(distanceKm(user.lat, user.lon, target.toLat, target.toLon));
-  }
-  const nearest = Math.min(...distances);
+  const nearest = Math.min(targetKm, named);
 
   if (nearest <= user.radiusKm) {
-    return { reason: 'in_radius', distanceKm: nearest };
+    // Already here. A time-to-reach would be a rounding artefact, not information.
+    return { reason: 'in_radius', distanceKm: named, targetKm, etaMin: null };
   }
 
   // Course corridor. Only meaningful with a known heading and a known origin —
@@ -115,10 +142,15 @@ export function matchTarget(
   // Only warn about what can plausibly reach them soon. A drone 600 km up-track is
   // not news; the same drone 20 minutes out is.
   const reach = (TYPE_SPEED_KMH[target.type] * opts.leadMinutes) / 60;
-  const fromPosition = distanceKm(user.lat, user.lon, position.lat, position.lon);
-  if (fromPosition > reach + user.radiusKm) return undefined;
+  if (targetKm > reach + user.radiusKm) return undefined;
 
-  return { reason: 'heading_towards', distanceKm: fromPosition };
+  return {
+    reason: 'heading_towards',
+    distanceKm: named,
+    targetKm,
+    // Measured from where the thing is, not from the town it is aimed at.
+    etaMin: minutesToUser(targetKm),
+  };
 }
 
 /** Initial great-circle bearing, degrees, 0 = north. Local copy to keep this pure. */

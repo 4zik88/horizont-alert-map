@@ -16,8 +16,8 @@ describe('migrations', () => {
     assert.equal(version, MIGRATIONS.at(-1)?.version);
     assert.equal(db.pragma('user_version', { simple: true }), version);
     assert.deepEqual(tableNames(db), [
-      'app_state', 'channel_state', 'messages', 'notifications', 'oblast_alerts',
-      'targets', 'toponym_forms', 'toponyms', 'users',
+      'app_state', 'channel_state', 'messages', 'notice_ledger', 'oblast_alerts',
+      'raion_alerts', 'targets', 'toponym_forms', 'toponyms', 'users',
     ]);
   });
 

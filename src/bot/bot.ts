@@ -1,6 +1,7 @@
 import { logger } from '../logger.js';
 import type { Gazetteer } from '../parser/gazetteer.js';
 import { oblastByKey } from '../parser/oblasts.js';
+import { raionAt, raionName } from '../geo/raions.js';
 import { AppState, Users, DEFAULT_RADIUS_KM, MAX_RADIUS_KM, MIN_RADIUS_KM } from '../db/users.js';
 import { TelegramApi, trySend, type TelegramMessage, type TelegramUpdate } from './api.js';
 import { isAllowed } from './access.js';
@@ -159,6 +160,10 @@ export class Bot {
       lon: location.longitude,
       kind: live ? 'live' : 'static',
       oblast: this.oblastAt(location.latitude, location.longitude),
+      // Derived once, here, rather than on every alert poll: the coordinates change
+      // only when the user moves, and a point-in-polygon sweep per user per poll would
+      // be work repeated for an answer that did not change.
+      raion: raionAt(location.latitude, location.longitude)?.match ?? null,
       liveUntil: live ? now + location.live_period! * 1000 : null,
       now,
     });
@@ -172,11 +177,14 @@ export class Bot {
     if (isEdit) return;
 
     const user = this.users.get(chatId);
-    const oblast = user?.oblast ? oblastByKey(user.oblast)?.name : undefined;
 
-    // Never echo the coordinates back — they would then sit in Telegram's history and
-    // in any screenshot of the chat.
-    const where = oblast ? ` (${escapeHtml(oblast)} обл.)` : '';
+    /*
+     * Confirm the raion, not the oblast: it is what alerts are now keyed on, so the
+     * reader can see straight away whether the bot placed them correctly. Still no
+     * coordinates — those would then sit in Telegram's history and in any screenshot
+     * of the chat.
+     */
+    const where = describeArea(user);
     const mode = live ? 'Live-локацію прийнято, оновлюватиму автоматично.' : 'Локацію збережено.';
     await trySend(
       this.api,
@@ -216,12 +224,8 @@ export class Bot {
     if (user.lat === null) {
       lines.push('Локація: не задана — надішліть геолокацію');
     } else {
-      const oblast = user.oblast ? oblastByKey(user.oblast)?.name : undefined;
       const live = user.location_kind === 'live' && (user.live_until ?? 0) > Date.now();
-      lines.push(
-        `Локація: ${live ? 'live, оновлюється' : 'збережена'}` +
-          `${oblast ? `, ${escapeHtml(oblast)} обл.` : ''}`,
-      );
+      lines.push(`Локація: ${live ? 'live, оновлюється' : 'збережена'}${describeArea(user)}`);
     }
 
     return lines.join('\n');
@@ -238,6 +242,21 @@ export class Bot {
   private oblastAt(lat: number, lon: number): string | null {
     return this.gazetteer.nearestOblast(lat, lon);
   }
+}
+
+/**
+ * Where the bot thinks the reader is, in words and without coordinates.
+ *
+ * The raion when it is known, because that is the unit alerts are declared in; the
+ * oblast otherwise, which is the honest answer for Kyiv city and anywhere the polygons
+ * do not cover.
+ */
+function describeArea(user: { oblast: string | null; raion: string | null } | undefined): string {
+  if (!user) return '';
+  if (user.raion) return ` (${escapeHtml(raionName(user.raion))})`;
+
+  const oblast = user.oblast ? oblastByKey(user.oblast)?.name : undefined;
+  return oblast ? ` (${escapeHtml(oblast)} обл.)` : '';
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

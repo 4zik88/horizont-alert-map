@@ -3,7 +3,6 @@ import { closeDb, openDb } from './db/index.js';
 import { Repo } from './db/repo.js';
 import { seedGazetteerIfEmpty } from './db/seed.js';
 import { startServer } from './http/server.js';
-import { MapApi } from './http/api.js';
 import { logger } from './logger.js';
 import { createExtractor } from './parser/llm.js';
 import { Gazetteer } from './parser/gazetteer.js';
@@ -14,6 +13,7 @@ import { Bot } from './bot/bot.js';
 import { AppState, Users } from './db/users.js';
 import { Notifier, DEFAULT_NOTIFIER } from './notify/notifier.js';
 import { AlertWatcher } from './alerts/watcher.js';
+import { raionAt } from './geo/raions.js';
 import { allowedChatIds, allowedUsernames } from './bot/access.js';
 import { Maintenance } from './maintenance/index.js';
 
@@ -31,22 +31,10 @@ async function main(): Promise<void> {
   seedGazetteerIfEmpty(db);
   const repo = new Repo(db);
 
-  // The map is served only when a token is configured; without one the service is
-  // still a healthy web service, it just has nothing public to show.
-  const mapApi = config.MAP_TOKEN
-    ? new MapApi(db, {
-        targetWindowMs: config.MAP_TARGET_WINDOW_MS,
-        feedLimit: config.MAP_FEED_LIMIT,
-      })
-    : undefined;
-  if (!config.MAP_TOKEN) {
-    logger.info('MAP_TOKEN not set — the map is disabled (run `npm run map:token`)');
-  }
-
-  const server = startServer(repo, mapApi, {
+  // Health only. Everything the reader sees arrives by Telegram.
+  const server = startServer(repo, {
     port: config.PORT,
     pollIntervalMs: config.POLL_INTERVAL_MS,
-    publicDir: config.PUBLIC_DIR,
   });
 
   const poller = new Poller(repo, {
@@ -83,6 +71,15 @@ async function main(): Promise<void> {
     const api = new TelegramApi(config.TELEGRAM_BOT_TOKEN);
     telegramApi = api;
     const users = new Users(db);
+    /*
+     * Anyone who shared a location before alerts were keyed on raions has a null one,
+     * and a null raion falls back silently to the oblast-wide message this replaced.
+     * Filling it in here means they do not have to re-send their location to get the
+     * behaviour they were promised.
+     */
+    const filled = users.backfillRaions((lat, lon) => raionAt(lat, lon)?.match ?? null, Date.now());
+    if (filled > 0) logger.info({ users: filled }, 'raion backfilled for existing users');
+
     const state = new AppState(db);
     const gazetteer = new Gazetteer(db);
 

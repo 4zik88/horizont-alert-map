@@ -8,6 +8,7 @@ import {
   type TargetView,
   type UserView,
 } from '../src/notify/proximity.js';
+import { TYPE_SPEED_KMH } from '../src/parser/targetTypes.js';
 
 const NOW = 1_700_000_000_000;
 const opts: ProximityOptions = { ...DEFAULT_PROXIMITY, now: NOW };
@@ -132,5 +133,78 @@ describe('matchTarget — heading towards', () => {
   test('needs a known origin before trusting a course', () => {
     const noOrigin = target({ courseDeg: 90, fromLat: null, fromLon: null });
     assert.equal(matchTarget(noOrigin, { ...user, radiusKm: 5 }, opts), undefined);
+  });
+});
+
+/*
+ * The reported bug: "Реактивний БпЛА, курс на Жашків, ~201 км від вас", read by a
+ * reader in Kozyatyn who knows Zhashkiv is about a hundred kilometres away.
+ *
+ * Both numbers were real. 106 km is the distance to Zhashkiv; 201 km was the distance
+ * to where the drone then was. The message printed the second under the name of the
+ * first, so which fact you got depended on why the alert had fired.
+ */
+describe('matchTarget — which distance is which', () => {
+  const KOZYATYN = { chatId: 1, lat: 49.716, lon: 28.8318, radiusKm: 40 };
+  const ZHASHKIV = { lat: 49.243, lon: 30.105 };
+  // South-east of the reader, beyond Zhashkiv, flying north-west at them.
+  const ORIGIN = { lat: 48.5, lon: 31.6 };
+
+  const jetTowardsZhashkiv = {
+    id: 1,
+    type: 'jet_uav' as const,
+    toName: 'Жашків',
+    toLat: ZHASHKIV.lat,
+    toLon: ZHASHKIV.lon,
+    fromLat: ORIGIN.lat,
+    fromLon: ORIGIN.lon,
+    courseDeg: 315,
+    confidence: 0.9,
+    observedAt: 1_000_000,
+  };
+
+  const opts = { ...DEFAULT_PROXIMITY, now: 1_000_000 };
+
+  test('the printed distance belongs to the place that is named', () => {
+    const match = matchTarget(jetTowardsZhashkiv, KOZYATYN, opts);
+
+    assert.ok(match, 'a jet UAV pointed at the reader should match');
+    assert.equal(match.reason, 'heading_towards');
+    assert.ok(
+      Math.abs(match.distanceKm - 106) < 5,
+      `Zhashkiv is ~106 km from Kozyatyn, got ${Math.round(match.distanceKm)}`,
+    );
+  });
+
+  test('where the target actually is stays available, separately', () => {
+    const match = matchTarget(jetTowardsZhashkiv, KOZYATYN, opts)!;
+
+    assert.ok(match.targetKm > match.distanceKm, 'the drone is further out than the town');
+    assert.ok(Math.abs(match.targetKm - 232) < 15, `got ${Math.round(match.targetKm)}`);
+  });
+
+  test('the time to reach the reader is measured from the target, not the town', () => {
+    const match = matchTarget(jetTowardsZhashkiv, KOZYATYN, opts)!;
+
+    assert.ok(match.etaMin !== null);
+    // 232 km at the jet-UAV cruise speed, not 106.
+    const expected = (match.targetKm / TYPE_SPEED_KMH.jet_uav) * 60;
+    assert.ok(Math.abs(match.etaMin - expected) < 0.01);
+  });
+
+  test('a target already in the radius reports no time to reach', () => {
+    const overhead = { ...jetTowardsZhashkiv, toLat: 49.72, toLon: 28.84 };
+    const match = matchTarget(overhead, KOZYATYN, opts)!;
+
+    assert.equal(match.reason, 'in_radius');
+    assert.equal(match.etaMin, null);
+    assert.ok(match.distanceKm < 5, 'and the distance is to the named town');
+  });
+
+  test('with no destination named, the distance is to the target itself', () => {
+    const unnamed = { ...jetTowardsZhashkiv, toName: null, toLat: null, toLon: null };
+    const match = matchTarget(unnamed, KOZYATYN, opts)!;
+
+    assert.equal(match.distanceKm, match.targetKm);
   });
 });

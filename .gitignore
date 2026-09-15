@@ -1,6 +1,5 @@
 node_modules/
 dist/
-# Root-only: `data/` also matched public/data/, which holds committed map geometry.
 /data/
 .env
 *.db

@@ -18,6 +18,8 @@ export interface UserRow {
   live_until: number | null;
   radius_km: number;
   oblast: string | null;
+  /** Raion key matching the alert feed's area names; null outside every polygon. */
+  raion: string | null;
   is_active: number;
 }
 
@@ -51,7 +53,8 @@ export class Users {
     this.setLocation = db.prepare(`
       UPDATE users
          SET lat = @lat, lon = @lon, location_kind = @kind, oblast = @oblast,
-             location_updated_at = @now, live_until = @liveUntil, updated_at = @now
+             raion = @raion, location_updated_at = @now, live_until = @liveUntil,
+             updated_at = @now
        WHERE chat_id = @chatId
     `);
 
@@ -85,10 +88,42 @@ export class Users {
     lon: number;
     kind: 'static' | 'live';
     oblast: string | null;
+    raion: string | null;
     liveUntil: number | null;
     now: number;
   }): void {
     this.setLocation.run(params);
+  }
+
+  /**
+   * Fill in the raion for users who shared a location before raions existed.
+   *
+   * Without this they keep a null raion until they next send a location, and a null
+   * raion silently falls back to oblast-level alerts — the exact behaviour this
+   * replaced, for precisely the people already using the bot. Cheap enough to run at
+   * every boot: it is one point-in-polygon per user with no raion, and a handful of
+   * users.
+   */
+  backfillRaions(locate: (lat: number, lon: number) => string | null, now: number): number {
+    const rows = this.db.prepare(
+      `SELECT chat_id, lat, lon FROM users WHERE raion IS NULL AND lat IS NOT NULL`,
+    ).all() as { chat_id: number; lat: number; lon: number }[];
+
+    const update = this.db.prepare(
+      `UPDATE users SET raion = @raion, updated_at = @now WHERE chat_id = @chatId`,
+    );
+
+    let filled = 0;
+    this.db.transaction(() => {
+      for (const row of rows) {
+        const raion = locate(row.lat, row.lon);
+        if (raion === null) continue;
+        update.run({ chatId: row.chat_id, raion, now });
+        filled++;
+      }
+    })();
+
+    return filled;
   }
 
   updateRadius(chatId: number, radiusKm: number, now: number): void {
