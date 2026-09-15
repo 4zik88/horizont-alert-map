@@ -15,6 +15,8 @@ import { allowedChatIds, allowedUsernames } from '../src/bot/access.js';
 import { TelegramApi } from '../src/bot/api.js';
 import { formatAlertBatch, type AlertLine } from '../src/bot/format.js';
 import { Users } from '../src/db/users.js';
+import { MIGRATIONS } from '../src/db/migrations.js';
+import { raionName } from '../src/geo/raions.js';
 import { oblastByKey } from '../src/parser/oblasts.js';
 import type { TargetType } from '../src/parser/targetTypes.js';
 import { DEFAULT_PROXIMITY, matchTarget, type TargetView } from '../src/notify/proximity.js';
@@ -47,14 +49,33 @@ async function main(): Promise<void> {
   }
 
   const db = new Database(config.DB_PATH, { readonly: true });
+
+  /*
+   * Opened read-only, so this cannot migrate — and `Users` prepares its statements
+   * eagerly, so an out-of-date database failed here with a bare "no such column"
+   * instead of saying what was wrong. Check the version and say it plainly.
+   */
+  const version = db.pragma('user_version', { simple: true }) as number;
+  const latest = MIGRATIONS.at(-1)!.version;
+  if (version < latest) {
+    console.log(`\n!! ${config.DB_PATH} is at schema version ${version}, needs ${latest}.`);
+    console.log('   Start the service once (npm run dev) to migrate it, then run this again.');
+    return;
+  }
+
   const users = new Users(db);
   const registered = users.notifiable();
 
   console.log(`\nregistered users with a location: ${registered.length}`);
   for (const user of registered) {
-    const oblast = user.oblast ? (oblastByKey(user.oblast)?.name ?? user.oblast) : 'unknown';
+    // The raion is what alerts are keyed on, so it is what is worth showing. Still
+    // never the coordinates — this output is the kind of thing that gets pasted into
+    // a chat.
+    const where = user.raion
+      ? raionName(user.raion)
+      : `${user.oblast ? (oblastByKey(user.oblast)?.name ?? user.oblast) : 'unknown'} обл. (no raion)`;
     const live = user.location_kind === 'live' ? ', live' : '';
-    console.log(`  chat ${user.chat_id}: ${oblast} обл., radius ${user.radius_km} km${live}`);
+    console.log(`  chat ${user.chat_id}: ${where}, radius ${user.radius_km} km${live}`);
   }
   if (registered.length === 0) {
     console.log('  (send /start and a location to the bot, then run this again)');
