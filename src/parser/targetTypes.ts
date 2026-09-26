@@ -45,7 +45,24 @@ const RULES: { type: TargetType; re: RegExp }[] = [
   },
   { type: 'recon', re: stem('розвід') },
   { type: 'jet_uav', re: stem('реактив|рбпла') },
-  { type: 'uav', re: stem('бпла|безпілотник|шахед|герань|shahed|geran|мопед') },
+  /*
+   * Named drone models, all Shahed-class for speed purposes.
+   *
+   * `гербера` is the decoy that flies the same profile as a Shahed (9 messages in the
+   * corpus); `ланцет` is a loitering munition and `молнія` a cheap strike drone. Each
+   * was reaching the reader as `unknown`, which is not cosmetic: an unknown type is
+   * assumed to fly at 200 km/h, and the "could this reach you" gate is distance
+   * divided by that. "гербера в районі Звягеля" was arriving with a guessed speed and
+   * a guessed reach.
+   *
+   * Deliberately NOT `дорозвідка`, despite it being the most common untyped word here
+   * (21 messages). It is not a weapon — it means "further intel on X", and the X is
+   * named in the same line: "дорозвідка по КАБах в бік Одеси" is a guided bomb, which
+   * the `kab` rule above already catches. Typing the word itself as `recon` would
+   * relabel a 700 km/h bomb as a 150 km/h scout, in the direction that loses the
+   * reader time they do not have.
+   */
+  { type: 'uav', re: stem('бпла|безпілотник|шахед|герань|гербер|ланцет|молні|shahed|geran|мопед') },
   { type: 'aviation', re: stem('тактичн[а-яіїєґ]*\\s+авіаці|авіаці|літак|борт[а-яіїєґ]*|міг-\\d+|ту-\\d+|су-\\d+') },
 ];
 

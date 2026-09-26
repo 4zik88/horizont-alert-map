@@ -71,3 +71,44 @@ describe('extractCount', () => {
     assert.equal(extractCount('Станом на 18.00'), 1);
   });
 });
+
+/*
+ * Named drone models, and the word that looks like one but is not.
+ *
+ * An unknown type is assumed to fly at 200 km/h, and the "could this reach you" gate
+ * is distance divided by that — so a missing name is not a cosmetic problem, it is a
+ * guessed speed and a guessed reach.
+ */
+describe('named drone models', () => {
+  test('гербера, ланцет and молнія are Shahed-class drones', () => {
+    assert.equal(classifyType('гербера в районі Звягеля курс на Рівненщину'), 'uav');
+    assert.equal(classifyType('ланцет над Харковом'), 'uav');
+    assert.equal(classifyType('молнія на Суми'), 'uav');
+  });
+
+  /*
+   * The trap. "дорозвідка" is the most common untyped word in the corpus (21
+   * messages) and reads like a reconnaissance drone, but it means "further intel on
+   * X" — and X is named in the same line. Typing the word itself would relabel a
+   * 700 km/h guided bomb as a 150 km/h scout, losing the reader time they do not have.
+   */
+  test('дорозвідка types the thing it reports on, not itself', () => {
+    assert.equal(classifyType('дорозвідка по КАБах в бік Одеси Фонтанки'), 'kab');
+    assert.equal(classifyType('дорозвідка по шахеду на Санжейку'), 'uav');
+  });
+
+  /*
+   * Real message 1829: a Lancet line sat three blocks below "Реактивний шахед" and
+   * inherited jet_uav from it — 600 km/h for something that flies at about 110.
+   * A named model must override the inherited context.
+   */
+  test('a named model beats the type inherited from earlier lines', () => {
+    assert.equal(classifyType('ланцет над Харковом', 'jet_uav'), 'uav');
+    assert.equal(classifyType('гербера на Вишневе', 'jet_uav'), 'uav');
+  });
+
+  test('and does not disturb the reactive class it sits among', () => {
+    assert.equal(classifyType('Реактивний шахед на Тростянець'), 'jet_uav');
+    assert.equal(classifyType('2 реактивні шахеда на Магдалинівку'), 'jet_uav');
+  });
+});
