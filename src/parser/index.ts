@@ -1,5 +1,5 @@
 import type { Gazetteer } from './gazetteer.js';
-import { stripBoilerplate } from './clean.js';
+import { isFundraising, stripBoilerplate } from './clean.js';
 import { parseLine, type ParseContext, type ParsedTarget } from './rules.js';
 import { classifyType } from './targetTypes.js';
 import { stem } from './regex.js';
@@ -30,6 +30,14 @@ const LOW_CONFIDENCE = 0.5;
 export function parseMessage(text: string, gazetteer: Gazetteer): ParseResult {
   const cleaned = stripBoilerplate(text);
   if (!cleaned) return { targets: [], state: 'unparsed', needsLlm: false };
+
+  /*
+   * A post asking for donations is not a report, however it is worded — and one of
+   * them described what the channel does ("сповістити про кожну ціль ... з Одеси")
+   * in language close enough to a warning to produce a target on Odesa with a real
+   * position. `needsLlm` stays false: there is nothing here for the LLM to recover.
+   */
+  if (isFundraising(cleaned)) return { targets: [], state: 'unparsed', needsLlm: false };
 
   const context: ParseContext = {
     gazetteer,

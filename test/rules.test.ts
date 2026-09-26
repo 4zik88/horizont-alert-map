@@ -409,3 +409,45 @@ describe('oblast heading without punctuation', () => {
     assert.ok(targets.some((t) => t.toName === 'Охтирка'));
   });
 });
+
+/*
+ * Real message 679, from a channel that asks for coffee money between warnings.
+ *
+ * Every line-level guard passed it: the sentence is long, so the shorthand rule does
+ * not apply, and it contains "ціль", so the untyped-evidence rule accepts it. It put
+ * a target on Odesa with a real position — enough to wake anyone within 40 km at four
+ * in the morning, for a post about donations.
+ */
+describe('a fundraising post is not a report', () => {
+  const APPEAL = [
+    'Намагаюсь оперативно сповістити про кожну ціль з повітря з Одеси',
+    '',
+    'Буду вдячний за ваші 10-15 грн у підтримку канала 🙏',
+    '',
+    '💰PrivatBank: 5168752007622155',
+    '💰Paypal: policeguard777@gmail.com',
+  ].join('\n');
+
+  test('yields no targets at all', () => {
+    const { targets, state } = parse(APPEAL);
+    assert.equal(targets.length, 0, 'a request for money is never a warning');
+    assert.equal(state, 'unparsed');
+  });
+
+  test('and does not send it to the LLM to be rescued', () => {
+    assert.equal(parse(APPEAL).needsLlm, false);
+  });
+
+  test('a card number anywhere in the post is enough', () => {
+    assert.equal(parse('Шахед на Охтирку\n\n4874 1000 2099 7063').targets.length, 0);
+  });
+
+  /*
+   * Narrow on purpose. The guard must not swallow a genuine warning, and the words
+   * around money are common enough that a loose rule would.
+   */
+  test('a real warning that merely mentions a bank is untouched', () => {
+    const { targets } = parse('БпЛА курсом на Охтирку, повз відділення банку');
+    assert.ok(targets.some((t) => t.toName === 'Охтирка'));
+  });
+});
