@@ -11,16 +11,15 @@ import type { Db } from './index.js';
  * does not; regenerating means a morphology fix takes effect on the next restart
  * instead of waiting for someone to rebuild the tables.
  */
-export function loadGazetteer(db: Db): Gazetteer {
-  const places = db
-    .prepare(
-      `SELECT id, name, oblast, place, population, lat, lon, rank FROM toponyms`,
-    )
-    .all() as Place[];
-  const forms = db
-    .prepare(`SELECT form, toponym_id FROM toponym_forms`)
-    .raw()
-    .all() as [string, number][];
+export async function loadGazetteer(db: Db): Promise<Gazetteer> {
+  // By id, so the in-memory order is deterministic (and the one SQLite's rowid scan gave).
+  const { rows: places } = await db.query<Place>(
+    `SELECT id, name, oblast, place, population, lat, lon, rank FROM toponyms ORDER BY id`,
+  );
+  const { rows } = await db.query<{ form: string; toponym_id: number }>(
+    `SELECT form, toponym_id FROM toponym_forms`,
+  );
+  const forms = rows.map((r) => [r.form, r.toponym_id] as const);
   const fresh = places.flatMap((p) => generateForms(p.name).map((f) => [f, p.id] as const));
   return new Gazetteer(places, dedupe([...forms, ...fresh]));
 }

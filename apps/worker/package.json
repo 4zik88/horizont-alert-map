@@ -6,10 +6,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "tsx --conditions=source --test test/*.test.ts"
+    "test": "tsx --conditions=source --import ./test/setup.ts --test test/*.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.125.0",
+    "@horizont/contract": "workspace:*",
+    "@horizont/db": "workspace:*",
     "@horizont/geo": "workspace:*",
     "@horizont/parser": "workspace:*",
     "better-sqlite3": "13.0.3",

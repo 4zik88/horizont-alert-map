@@ -5,12 +5,15 @@ import { oblastByKey } from '@horizont/parser';
 import { raionName, raionsOf } from '@horizont/geo/node';
 import { TelegramApi, trySend } from '../bot/api.js';
 import { fetchAlertState, isActive, type AlertLevel, type AlertProvider } from './client.js';
+import { publishAlerts } from '../map/publish.js';
 
 export interface AlertWatcherOptions {
   provider: AlertProvider;
   token: string | undefined;
   intervalMs: number;
   timeoutMs: number;
+  /** Mirror each accepted poll into the map's alert intervals. Off in unit tests. */
+  publishMap?: boolean;
 }
 
 /**
@@ -32,39 +35,16 @@ export class AlertWatcher {
   private readonly users: Users;
   private readonly api: TelegramApi | undefined;
   private readonly opts: AlertWatcherOptions;
-  private readonly selectState;
-  private readonly upsertState;
-  private readonly selectRaionState;
-  private readonly upsertRaionState;
+  private readonly db: Db;
   private timer: NodeJS.Timeout | undefined;
   private stopping = false;
   private running = false;
 
   constructor(db: Db, users: Users, api: TelegramApi | undefined, opts: AlertWatcherOptions) {
+    this.db = db;
     this.users = users;
     this.api = api;
     this.opts = opts;
-
-    this.selectState = db.prepare(`SELECT oblast, level FROM oblast_alerts`);
-    this.selectRaionState = db.prepare(`SELECT raion, active FROM raion_alerts`);
-    this.upsertRaionState = db.prepare(`
-      INSERT INTO raion_alerts (raion, oblast, active, changed_at, updated_at)
-      VALUES (@raion, @oblast, @active, @now, @now)
-      ON CONFLICT(raion) DO UPDATE SET
-        active = @active,
-        changed_at = CASE WHEN raion_alerts.active <> @active THEN @now ELSE raion_alerts.changed_at END,
-        updated_at = @now
-    `);
-    this.upsertState = db.prepare(`
-      INSERT INTO oblast_alerts (oblast, active, level, areas, changed_at, updated_at)
-      VALUES (@oblast, @active, @level, @areas, @now, @now)
-      ON CONFLICT(oblast) DO UPDATE SET
-        active = @active,
-        level = @level,
-        areas = @areas,
-        changed_at = CASE WHEN oblast_alerts.level <> @level THEN @now ELSE oblast_alerts.changed_at END,
-        updated_at = @now
-    `);
   }
 
   start(): void {
@@ -103,14 +83,20 @@ export class AlertWatcher {
       const state = await fetchAlertState(this.opts.provider, this.opts.token, this.opts.timeoutMs);
       if (state.levels.size === 0) return { starts: [], stops: [], sent: 0 };
 
+      const { rows: oblastRows } = await this.db.query<{ oblast: string; level: string }>(
+        `SELECT oblast, level FROM oblast_alerts`,
+      );
+      const { rows: raionRows } = await this.db.query<{ raion: string; active: number }>(
+        `SELECT raion, active FROM raion_alerts`,
+      );
       const previousOblast = new Map<string, AlertLevel>(
-        (this.selectState.all() as { oblast: string; level: string }[]).map((r) => [
+        oblastRows.map((r) => [
           r.oblast,
           r.level as AlertLevel,
         ]),
       );
       const previousRaion = new Map<string, boolean>(
-        (this.selectRaionState.all() as { raion: string; active: number }[]).map((r) => [
+        raionRows.map((r) => [
           r.raion,
           r.active === 1,
         ]),
@@ -123,41 +109,59 @@ export class AlertWatcher {
       const oblastStarts: string[] = [];
       const oblastStops: string[] = [];
 
-      for (const [oblast, level] of state.levels) {
-        this.upsertState.run({
-          oblast,
-          active: isActive(level) ? 1 : 0,
-          level,
-          areas: JSON.stringify(state.areas.get(oblast) ?? []),
-          now,
-        });
+      /*
+       * One transaction for the whole poll: hundreds of raion upserts commit together,
+       * so a reader of these tables never sees half a poll applied.
+       */
+      await this.db.transaction(async (tx) => {
+        for (const [oblast, level] of state.levels) {
+          await tx.query(
+            `INSERT INTO oblast_alerts (oblast, active, level, areas, changed_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $5)
+             ON CONFLICT (oblast) DO UPDATE SET
+               active = excluded.active,
+               level = excluded.level,
+               areas = excluded.areas,
+               changed_at = CASE WHEN oblast_alerts.level <> excluded.level
+                                 THEN excluded.changed_at ELSE oblast_alerts.changed_at END,
+               updated_at = excluded.updated_at`,
+            [oblast, isActive(level) ? 1 : 0, level, JSON.stringify(state.areas.get(oblast) ?? []), now],
+          );
 
-        const beforeOblast = previousOblast.get(oblast);
-        if (beforeOblast !== undefined && beforeOblast !== level) {
-          if (!isActive(beforeOblast) && isActive(level)) oblastStarts.push(oblast);
-          else if (isActive(beforeOblast) && !isActive(level)) oblastStops.push(oblast);
+          const beforeOblast = previousOblast.get(oblast);
+          if (beforeOblast !== undefined && beforeOblast !== level) {
+            if (!isActive(beforeOblast) && isActive(level)) oblastStarts.push(oblast);
+            else if (isActive(beforeOblast) && !isActive(level)) oblastStops.push(oblast);
+          }
+
+          for (const raion of raionStates(oblast, level, state.areas.get(oblast) ?? [])) {
+            const before = previousRaion.get(raion.match);
+            await tx.query(
+              `INSERT INTO raion_alerts (raion, oblast, active, changed_at, updated_at)
+               VALUES ($1, $2, $3, $4, $4)
+               ON CONFLICT (raion) DO UPDATE SET
+                 active = excluded.active,
+                 changed_at = CASE WHEN raion_alerts.active <> excluded.active
+                                   THEN excluded.changed_at ELSE raion_alerts.changed_at END,
+                 updated_at = excluded.updated_at`,
+              [raion.match, oblast, raion.active ? 1 : 0, now],
+            );
+
+            /*
+             * A raion seen for the first time is recorded but never announced. On a
+             * fresh database — or the first poll after this feature shipped — every
+             * active alert in the country would otherwise look like it had just started,
+             * and everyone's phone would go off at once for nothing.
+             */
+            if (before === undefined || before === raion.active) continue;
+            if (raion.active) starts.push(raion.match);
+            else stops.push(raion.match);
+          }
         }
+      });
 
-        for (const raion of raionStates(oblast, level, state.areas.get(oblast) ?? [])) {
-          const before = previousRaion.get(raion.match);
-          this.upsertRaionState.run({
-            raion: raion.match,
-            oblast,
-            active: raion.active ? 1 : 0,
-            now,
-          });
-
-          /*
-           * A raion seen for the first time is recorded but never announced. On a
-           * fresh database — or the first poll after this feature shipped — every
-           * active alert in the country would otherwise look like it had just started,
-           * and everyone's phone would go off at once for nothing.
-           */
-          if (before === undefined || before === raion.active) continue;
-          if (raion.active) starts.push(raion.match);
-          else stops.push(raion.match);
-        }
-      }
+      // The map follows every accepted poll, transitions or not.
+      if (this.opts.publishMap) await publishAlerts(this.db, state, now);
 
       if (starts.length === 0 && stops.length === 0
         && oblastStarts.length === 0 && oblastStops.length === 0) {
@@ -170,7 +174,7 @@ export class AlertWatcher {
       }
 
       let sent = 0;
-      for (const user of this.users.notifiable()) {
+      for (const user of await this.users.notifiable()) {
         const text = messageFor(user, { starts, stops, oblastStarts, oblastStops });
         if (text && await trySend(this.api, user.chat_id, text)) sent++;
       }

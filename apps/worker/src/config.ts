@@ -8,7 +8,14 @@ const schema = z.object({
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
   PORT: z.coerce.number().int().positive().default(8080),
 
-  DB_PATH: z.string().min(1).default('./data/app.db'),
+  /*
+   * Postgres connection string, credentials included — so it is a secret: it never
+   * reaches a log line (see SECRET_KEYS). Required: there is no sensible default, and
+   * a worker that boots without a database cannot do anything useful.
+   */
+  DATABASE_URL: z
+    .string({ error: 'DATABASE_URL is required (postgres://user:pass@host:port/db)' })
+    .regex(/^postgres(?:ql)?:\/\//, 'DATABASE_URL must be a postgres:// or postgresql:// URL'),
 
   CHANNELS: z
     .string()
@@ -55,6 +62,9 @@ const schema = z.object({
   ALLOWED_CHAT_IDS: z.string().optional(),
   ALLOWED_USERNAMES: z.string().optional(),
   BOT_POLL_TIMEOUT_SECONDS: z.coerce.number().int().min(1).max(60).default(30),
+  // Where the map is served, e.g. https://horizont.up.railway.app. Without it the bot
+  // issues no map logins and /map says the map is not set up.
+  PUBLIC_URL: z.string().url().optional(),
 
   NOTIFY_INTERVAL_MS: z.coerce.number().int().min(1_000).default(15_000),
   NOTIFY_COOLDOWN_MS: z.coerce.number().int().min(0).default(300_000),
@@ -72,11 +82,9 @@ const schema = z.object({
   ALERTS_POLL_INTERVAL_MS: z.coerce.number().int().min(5_000).default(15_000),
 
   /*
-   * Maintenance. Railway volumes have no automatic backups, and the ingest log grows
-   * without bound, so both run daily inside the single process that owns the volume.
+   * Maintenance. The ingest log grows without bound, so retention runs daily. Backups
+   * are the database provider's job (Railway Postgres has them).
    */
-  BACKUP_DIR: z.string().min(1).default('./data/backups'),
-  BACKUP_KEEP: z.coerce.number().int().min(1).max(90).default(7),
   RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(90),
   MAINTENANCE_INTERVAL_MS: z.coerce.number().int().min(60_000).default(86_400_000),
 });
@@ -85,6 +93,7 @@ export type Config = z.infer<typeof schema>;
 
 /** Env vars that must never appear in a log line, a boot banner, or an error. */
 const SECRET_KEYS = [
+  'DATABASE_URL',
   'GROQ_API_KEY',
   'TELEGRAM_BOT_TOKEN',
   'ANTHROPIC_API_KEY',

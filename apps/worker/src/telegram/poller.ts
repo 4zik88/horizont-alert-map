@@ -31,12 +31,12 @@ export class Poller {
     this.opts = opts;
   }
 
-  start(): void {
-    this.opts.channels.forEach((channel, index) => {
-      this.repo.ensureChannel(channel.toLowerCase());
+  async start(): Promise<void> {
+    for (const [index, channel] of this.opts.channels.entries()) {
+      await this.repo.ensureChannel(channel.toLowerCase());
       // Stagger the channels so three full-page fetches never fire together.
       this.schedule(channel.toLowerCase(), index * 2_500);
-    });
+    }
 
     logger.info(
       { channels: this.opts.channels, intervalMs: this.opts.pollIntervalMs },
@@ -48,8 +48,8 @@ export class Poller {
     this.stopping = true;
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
-    // better-sqlite3 transactions are synchronous, so an in-flight ingest is already
-    // atomic; this only waits for the surrounding fetch to settle.
+    // An in-flight ingest is one transaction, so it either commits or rolls back;
+    // this waits for it and the surrounding fetch to settle.
     await Promise.allSettled([...this.running]);
     logger.info('poller stopped');
   }
@@ -72,7 +72,7 @@ export class Poller {
     const startedAt = Date.now();
 
     try {
-      const state = this.repo.getChannel(channel);
+      const state = await this.repo.getChannel(channel);
       if (state && state.enabled === 0) {
         logger.debug({ channel }, 'channel disabled, skipping');
         this.schedule(channel, this.opts.pollIntervalMs);
@@ -88,7 +88,7 @@ export class Poller {
         throw new FetchError('empty', `channel ${channel} returned a page with no messages`);
       }
 
-      const result = ingestMessages(this.repo, messages);
+      const result = await ingestMessages(this.repo, messages);
       const minId = result.minId ?? 0;
       const maxId = result.maxId ?? 0;
 
@@ -97,7 +97,7 @@ export class Poller {
         gapFilled = await this.gapFill(channel, state.lastMessageId, minId);
       }
 
-      this.repo.markSuccess(channel, minId, maxId, Date.now());
+      await this.repo.markSuccess(channel, minId, maxId, Date.now());
 
       const payload = {
         channel,
@@ -125,7 +125,7 @@ export class Poller {
 
       this.schedule(channel, nextDelay(0, this.delayOpts()));
     } catch (error) {
-      this.handleFailure(channel, error);
+      await this.handleFailure(channel, error);
     }
   }
 
@@ -142,7 +142,7 @@ export class Poller {
     while (pages < this.opts.gapFillMaxPages && cursor < minIdOnPage && !this.stopping) {
       const html = await fetchChannelPage(channel, { after: cursor }, this.opts.fetchTimeoutMs);
       const messages = parsePage(html, channel);
-      const result = ingestMessages(this.repo, messages);
+      const result = await ingestMessages(this.repo, messages);
 
       ingested += result.inserted + result.updated;
       pages += 1;
@@ -159,12 +159,14 @@ export class Poller {
     return ingested;
   }
 
-  private handleFailure(channel: string, error: unknown): void {
+  private async handleFailure(channel: string, error: unknown): Promise<void> {
     const fetchError = error instanceof FetchError ? error : undefined;
     const message = error instanceof Error ? error.message : String(error);
 
-    this.repo.markFailure(channel, message, Date.now());
-    const failures = this.repo.getChannel(channel)?.consecutiveFailures ?? 1;
+    // If the database itself is what failed, this rejects and the process exits via
+    // the unhandledRejection handler — the restart-loudly policy in index.ts.
+    await this.repo.markFailure(channel, message, Date.now());
+    const failures = (await this.repo.getChannel(channel))?.consecutiveFailures ?? 1;
 
     if (fetchError?.permanent) {
       // A redirect will not stop being a redirect. Keep retrying at the capped

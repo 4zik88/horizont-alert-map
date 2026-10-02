@@ -4,13 +4,13 @@
  *   pnpm fuzzy:audit            all hits
  *   pnpm fuzzy:audit --off      coverage with fuzzy disabled, for comparison
  */
-import Database from 'better-sqlite3';
+import { connect } from '@horizont/db';
 import { config } from '../src/config.js';
 import { loadGazetteer } from '../src/db/gazetteer.js';
 import { parseMessage } from '@horizont/parser';
 
-const db = new Database(config.DB_PATH, { readonly: true });
-const gazetteer = loadGazetteer(db);
+const db = connect(config.DATABASE_URL);
+const gazetteer = await loadGazetteer(db);
 gazetteer.fuzzyEnabled = !process.argv.includes('--off');
 
 const hits = new Map<string, { name: string; oblast: string | null; d: number; n: number; line: string }>();
@@ -22,9 +22,10 @@ gazetteer.onFuzzy = (phrase, hit) => {
   else hits.set(key, { name: hit.name, oblast: hit.oblast, d: hit.fuzzy ?? 0, n: 1, line: current });
 };
 
-const rows = db
-  .prepare(`SELECT text FROM messages WHERE is_sensitive = 0 AND text <> ''`)
-  .all() as { text: string }[];
+const { rows } = await db.query<{ text: string }>(
+  `SELECT text FROM messages WHERE is_sensitive = 0 AND text <> '' ORDER BY id`,
+);
+await db.close();
 let parsed = 0;
 let targets = 0;
 for (const { text } of rows) {

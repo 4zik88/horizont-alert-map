@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Db } from './index.js';
 import { logger } from '../logger.js';
+import { insertToponyms, type ToponymInput } from './toponyms.js';
 import { generateForms, normalise, rankOf } from '@horizont/parser';
 import { geoDataPath } from '@horizont/geo/node';
 
@@ -26,9 +27,9 @@ interface Seed {
   rows: [number | null, string, string | null, string, number, number, number][];
 }
 
-export function seedGazetteerIfEmpty(db: Db, path = SEED_PATH): number {
-  const existing = db.prepare('SELECT COUNT(*) AS n FROM toponyms').get() as { n: number };
-  if (existing.n > 0) return 0;
+export async function seedGazetteerIfEmpty(db: Db, path = SEED_PATH): Promise<number> {
+  const { rows } = await db.query<{ n: number }>('SELECT COUNT(*) AS n FROM toponyms');
+  if (rows[0]!.n > 0) return 0;
 
   let seed: Seed;
   try {
@@ -42,28 +43,15 @@ export function seedGazetteerIfEmpty(db: Db, path = SEED_PATH): number {
     return 0;
   }
 
-  const insertToponym = db.prepare(`
-    INSERT INTO toponyms (osm_id, name, name_norm, oblast, place, population, lat, lon, rank)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  const insertForm = db.prepare(
-    'INSERT OR IGNORE INTO toponym_forms (form, toponym_id) VALUES (?, ?)',
+  const entries: ToponymInput[] = seed.rows.map(
+    ([osmId, name, oblast, place, population, lat, lon]) => ({
+      osmId, name, nameNorm: normalise(name), oblast, place, population, lat, lon,
+      rank: rankOf(place, population),
+      forms: generateForms(name),
+    }),
   );
 
-  let forms = 0;
-  db.transaction(() => {
-    for (const [osmId, name, oblast, place, population, lat, lon] of seed.rows) {
-      const info = insertToponym.run(
-        osmId, name, normalise(name), oblast, place, population, lat, lon,
-        rankOf(place, population),
-      );
-      const id = Number(info.lastInsertRowid);
-      for (const form of generateForms(name)) {
-        insertForm.run(form, id);
-        forms++;
-      }
-    }
-  })();
+  const { forms } = await db.transaction((tx) => insertToponyms(tx, entries));
 
   logger.info({ toponyms: seed.rows.length, forms }, 'gazetteer seeded');
   return seed.rows.length;

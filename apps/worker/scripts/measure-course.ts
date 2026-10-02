@@ -1,12 +1,13 @@
 import { openDb } from '../src/db/index.js';
+import { config } from '../src/config.js';
 import { loadGazetteer } from '../src/db/gazetteer.js';
 import { parseMessage } from '@horizont/parser';
 
-const db = openDb(process.env['DB_PATH'] ?? './data/map.db');
-const gaz = loadGazetteer(db);
-const rows = db.prepare(
-  "SELECT text FROM messages WHERE is_sensitive = 0 AND text <> ''",
-).all() as { text: string }[];
+const db = await openDb(config.DATABASE_URL);
+const gaz = await loadGazetteer(db);
+const { rows } = await db.query<{ text: string }>(
+  `SELECT text FROM messages WHERE is_sensitive = 0 AND text <> '' ORDER BY id`,
+);
 
 const TARGET = /бпла|шахед|герань|каб|ракет|реактивн|балістик|авіаці/iu;
 let targets = 0, course = 0, origin = 0, parsed = 0, missedWithTarget = 0;
@@ -25,4 +26,4 @@ console.log(`messages=${rows.length}  parsed=${parsed} (${pct(parsed, rows.lengt
   `missed-with-target-word=${missedWithTarget}`);
 console.log(`targets=${targets}  course=${course} (${pct(course, targets)})  ` +
   `origin=${origin} (${pct(origin, targets)})`);
-db.close();
+await db.close();

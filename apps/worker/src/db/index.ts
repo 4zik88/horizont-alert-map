@@ -1,33 +1,26 @@
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
-import Database from 'better-sqlite3';
-import { migrate } from './migrations.js';
+import { connect, migrate, type Sql } from '@horizont/db';
 import { logger } from '../logger.js';
 
-export type Db = Database.Database;
+/**
+ * The worker's handle on Postgres. Every query goes through the `Sql` interface from
+ * `@horizont/db`, so tests run the same statements against an in-process PGlite.
+ */
+export type Db = Sql;
 
-export function openDb(path: string): Db {
-  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
+/** Connect and bring the schema up to date. The URL is never logged. */
+export async function openDb(url: string): Promise<Db> {
+  const db = connect(url, {
+    onError: (err) => logger.warn({ err: err.message }, 'postgres connection dropped; the pool replaces it'),
+  });
 
-  const db = new Database(path);
-
-  // WAL: the step-4 HTTP readers never block the poller's writes.
-  db.pragma('journal_mode = WAL');
-  // WAL + NORMAL is the right durability/IO trade-off on a Railway volume.
-  db.pragma('synchronous = NORMAL');
-  // Off by default in SQLite; the targets -> messages cascade depends on it.
-  db.pragma('foreign_keys = ON');
-  db.pragma('busy_timeout = 5000');
-
-  const version = migrate(db, (m) =>
+  const version = await migrate(db, (m) =>
     logger.info({ version: m.version, name: m.name }, 'migration applied'),
   );
-  logger.debug({ path, schemaVersion: version }, 'database ready');
+  logger.debug({ schemaVersion: version }, 'database ready');
 
   return db;
 }
 
-export function closeDb(db: Db): void {
-  // Checkpoints the WAL back into the main file so a redeploy leaves it clean.
-  db.close();
+export async function closeDb(db: Db): Promise<void> {
+  await db.close();
 }

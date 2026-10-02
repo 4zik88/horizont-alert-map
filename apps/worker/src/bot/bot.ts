@@ -11,6 +11,8 @@ const OFFSET_KEY = 'telegram_offset';
 
 export interface BotOptions {
   pollTimeoutSeconds: number;
+  /** Issues a one-time map login and returns the message to send; absent = no map. */
+  mapLogin?: (chatId: number) => Promise<string>;
 }
 
 /**
@@ -58,7 +60,7 @@ export class Bot {
 
     while (!this.stopping) {
       try {
-        const offset = this.state.getNumber(OFFSET_KEY, 0);
+        const offset = await this.state.getNumber(OFFSET_KEY, 0);
         const updates = await this.api.getUpdates(offset, this.opts.pollTimeoutSeconds);
         failures = 0;
 
@@ -73,7 +75,7 @@ export class Bot {
           }
           // Acknowledge per update: a crash mid-batch must not replay the whole batch,
           // and must not skip the rest either.
-          this.state.setNumber(OFFSET_KEY, update.update_id + 1, Date.now());
+          await this.state.setNumber(OFFSET_KEY, update.update_id + 1, Date.now());
         }
       } catch (error) {
         failures++;
@@ -120,8 +122,18 @@ export class Bot {
     const command = text.split(/\s+/)[0]!.toLowerCase().replace(/@.*$/, '');
     switch (command) {
       case '/start':
-        this.users.register(chatId, username, Date.now());
+        await this.users.register(chatId, username, Date.now());
         await trySend(this.api, chatId, HELP);
+        if (this.opts.mapLogin) await trySend(this.api, chatId, await this.opts.mapLogin(chatId));
+        break;
+      case '/map':
+        // A login is only valid for a known user; this does not re-enable warnings.
+        await this.users.ensureKnown(chatId, username, Date.now());
+        await trySend(
+          this.api,
+          chatId,
+          this.opts.mapLogin ? await this.opts.mapLogin(chatId) : 'Карту ще не налаштовано.',
+        );
         break;
       case '/help':
         await trySend(this.api, chatId, HELP);
@@ -130,10 +142,10 @@ export class Bot {
         await this.onRadius(chatId, text);
         break;
       case '/status':
-        await trySend(this.api, chatId, this.statusText(chatId));
+        await trySend(this.api, chatId, await this.statusText(chatId));
         break;
       case '/stop':
-        this.users.setStopped(chatId, Date.now());
+        await this.users.setStopped(chatId, Date.now());
         await trySend(this.api, chatId, '🔕 Сповіщення вимкнено. /start — увімкнути знову.');
         break;
       default:
@@ -151,10 +163,10 @@ export class Bot {
     const now = Date.now();
 
     // A location can arrive before /start; treat it as registration.
-    this.users.register(chatId, username, now);
+    await this.users.register(chatId, username, now);
 
     const live = (location.live_period ?? 0) > 0;
-    this.users.saveLocation({
+    await this.users.saveLocation({
       chatId,
       lat: location.latitude,
       lon: location.longitude,
@@ -176,7 +188,7 @@ export class Bot {
      */
     if (isEdit) return;
 
-    const user = this.users.get(chatId);
+    const user = await this.users.get(chatId);
 
     /*
      * Confirm the raion, not the oblast: it is what alerts are now keyed on, so the
@@ -198,7 +210,7 @@ export class Bot {
     const value = raw === undefined ? Number.NaN : Number.parseInt(raw, 10);
 
     if (!Number.isFinite(value)) {
-      const current = this.users.get(chatId)?.radius_km ?? DEFAULT_RADIUS_KM;
+      const current = (await this.users.get(chatId))?.radius_km ?? DEFAULT_RADIUS_KM;
       await trySend(this.api, chatId, `Поточний радіус: ${current} км.\nЗмінити: /radius 30`);
       return;
     }
@@ -208,12 +220,12 @@ export class Bot {
       return;
     }
 
-    this.users.updateRadius(chatId, value, Date.now());
+    await this.users.updateRadius(chatId, value, Date.now());
     await trySend(this.api, chatId, `✅ Радіус сповіщення: ${value} км.`);
   }
 
-  private statusText(chatId: number): string {
-    const user = this.users.get(chatId);
+  private async statusText(chatId: number): Promise<string> {
+    const user = await this.users.get(chatId);
     if (!user) return 'Ви ще не зареєстровані. Надішліть /start.';
 
     const lines = [

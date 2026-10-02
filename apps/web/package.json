@@ -1,0 +1,22 @@
+{
+  "name": "@horizont/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json && vite build",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "tsx --conditions=source --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@horizont/contract": "workspace:*",
+    "@horizont/geo": "workspace:*",
+    "maplibre-gl": "^6.11.2"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.2"
+  }
+}

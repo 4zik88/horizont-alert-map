@@ -8,7 +8,7 @@
  *
  * Read-only: it writes nothing to the database.
  */
-import Database from 'better-sqlite3';
+import { connect } from '@horizont/db';
 import { config, redactedConfig } from '../src/config.js';
 import { loadGazetteer } from '../src/db/gazetteer.js';
 import { createExtractor } from '../src/parser/llm.js';
@@ -41,20 +41,25 @@ async function main(): Promise<void> {
     }
   }
 
-  const db = new Database(config.DB_PATH, { readonly: true });
-  if ((db.prepare('SELECT COUNT(*) c FROM toponyms').get() as { c: number }).c === 0) {
+  // Read-only: connect without migrating, and only ever SELECT.
+  const db = connect(config.DATABASE_URL);
+  const { rows: [toponyms] } = await db.query<{ c: number }>('SELECT COUNT(*) AS c FROM toponyms');
+  if (toponyms!.c === 0) {
     console.error('Gazetteer is empty — run `npm run build:toponyms` first.');
     process.exit(1);
   }
 
-  const gazetteer = loadGazetteer(db);
+  const gazetteer = await loadGazetteer(db);
   const extractor = await createExtractor(gazetteer);
 
   // Real messages the rules could not resolve — exactly what the fallback exists for.
-  const candidates = (
-    db.prepare(`SELECT text, posted_at FROM messages WHERE is_sensitive = 0 AND text <> ''`).all() as
-      { text: string; posted_at: number }[]
-  ).filter((m) => parseMessage(m.text, gazetteer).needsLlm).slice(0, SAMPLE_SIZE);
+  const { rows: all } = await db.query<{ text: string; posted_at: number }>(
+    `SELECT text, posted_at FROM messages WHERE is_sensitive = 0 AND text <> '' ORDER BY id`,
+  );
+  await db.close();
+  const candidates = all
+    .filter((m) => parseMessage(m.text, gazetteer).needsLlm)
+    .slice(0, SAMPLE_SIZE);
 
   console.log(`running the extractor over ${candidates.length} unresolved messages\n`);
 

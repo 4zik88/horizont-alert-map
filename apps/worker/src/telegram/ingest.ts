@@ -10,19 +10,19 @@ import type { IngestResult, ParsedMessage } from '../types.js';
  * *what lands in the DB*. The backfill script and step 2's re-parse worker reuse it
  * without touching the loop.
  *
- * The whole page goes in one transaction — ~20 statements, sub-millisecond — so a
- * crash mid-page can never leave a half-ingested cursor.
+ * The whole page goes in one transaction — ~20 statements — so a crash mid-page can
+ * never leave a half-ingested cursor.
  */
-export function ingestMessages(
+export async function ingestMessages(
   repo: Repo,
   messages: ParsedMessage[],
   now: number = Date.now(),
-): IngestResult {
+): Promise<IngestResult> {
   if (messages.length === 0) {
     return { inserted: 0, updated: 0, minId: null, maxId: null };
   }
 
-  return repo.transaction(() => {
+  return repo.transaction(async (tx) => {
     let inserted = 0;
     let updated = 0;
     let minId = Number.POSITIVE_INFINITY;
@@ -41,9 +41,9 @@ export function ingestMessages(
         isSensitive: isSensitive(message.text) ? 1 : 0,
       };
 
-      if (repo.tryInsertMessage(params)) {
+      if (await tx.tryInsertMessage(params)) {
         inserted += 1;
-      } else if (repo.tryUpdateMessage(params)) {
+      } else if (await tx.tryUpdateMessage(params)) {
         // Already seen, but the text changed: an edit. @KozakChornobay revises posts
         // continuously as a target moves, so this is a routine path.
         updated += 1;

@@ -69,9 +69,6 @@ export class Notifier {
   private readonly state: AppState;
   private readonly api: TelegramApi;
   private readonly opts: NotifierOptions;
-  private readonly selectSince;
-  private readonly selectRecentNotice;
-  private readonly recordNotice;
   private timer: NodeJS.Timeout | undefined;
   private stopping = false;
   private running = false;
@@ -82,25 +79,6 @@ export class Notifier {
     this.state = state;
     this.api = api;
     this.opts = opts;
-
-    this.selectSince = db.prepare(`
-      SELECT id, type, count, to_name, to_lat, to_lon, from_lat, from_lon,
-             course_deg, confidence, observed_at
-        FROM targets
-       WHERE id > ?
-       ORDER BY id
-       LIMIT ?
-    `);
-
-    this.selectRecentNotice = db.prepare(
-      `SELECT sent_at, distance_km FROM notice_ledger WHERE chat_id = ? AND subject = ?`,
-    );
-
-    this.recordNotice = db.prepare(`
-      INSERT INTO notice_ledger (chat_id, subject, distance_km, sent_at)
-      VALUES (@chatId, @subject, @distanceKm, @now)
-      ON CONFLICT(chat_id, subject) DO UPDATE SET distance_km = @distanceKm, sent_at = @now
-    `);
   }
 
   start(): void {
@@ -138,11 +116,19 @@ export class Notifier {
   async runOnce(now = Date.now()): Promise<{ scanned: number; sent: number; recipients: number }> {
     this.running = true;
     try {
-      const cursor = this.state.getNumber(CURSOR_KEY, 0);
-      const targets = this.selectSince.all(cursor, this.opts.batchSize) as TargetRow[];
+      const cursor = await this.state.getNumber(CURSOR_KEY, 0);
+      const { rows: targets } = await this.db.query<TargetRow>(
+        `SELECT id, type, count, to_name, to_lat, to_lon, from_lat, from_lon,
+                course_deg, confidence, observed_at
+           FROM targets
+          WHERE id > $1
+          ORDER BY id
+          LIMIT $2`,
+        [cursor, this.opts.batchSize],
+      );
       if (targets.length === 0) return { scanned: 0, sent: 0, recipients: 0 };
 
-      const users = this.users.notifiable();
+      const users = await this.users.notifiable();
       const proximity: ProximityOptions = { ...this.opts.proximity, now };
 
       // Group by user so a burst becomes one message rather than a dozen. A mass
@@ -170,7 +156,7 @@ export class Notifier {
             etaMin: match.etaMin,
             reason: match.reason,
           };
-          if (this.alreadySaid(user.chat_id, line, now)) continue;
+          if (await this.alreadySaid(user.chat_id, line, now)) continue;
 
           const bucket = pending.get(user.chat_id) ?? { lines: [] };
           bucket.lines.push(line);
@@ -188,20 +174,21 @@ export class Notifier {
         sent += bucket.lines.length;
         // Record only what was actually delivered, so a failed send is retried on the
         // next pass rather than silently swallowed by the cooldown.
-        this.db.transaction(() => {
+        await this.db.transaction(async (tx) => {
           for (const line of bucket.lines) {
-            this.recordNotice.run({
-              chatId,
-              subject: subjectOf(line),
-              distanceKm: line.distanceKm,
-              now,
-            });
+            await tx.query(
+              `INSERT INTO notice_ledger (chat_id, subject, distance_km, sent_at)
+               VALUES ($1, $2, $3, $4)
+               ON CONFLICT (chat_id, subject) DO UPDATE
+                 SET distance_km = excluded.distance_km, sent_at = excluded.sent_at`,
+              [chatId, subjectOf(line), line.distanceKm, now],
+            );
           }
-        })();
+        });
       }
 
       const lastId = targets.at(-1)!.id;
-      this.state.setNumber(CURSOR_KEY, lastId, now);
+      await this.state.setNumber(CURSOR_KEY, lastId, now);
 
       if (sent > 0) {
         // Never log chat ids alongside anything locational.
@@ -223,9 +210,12 @@ export class Notifier {
    * produces the identical sentence every poll, and repeating it teaches the reader to
    * ignore the bot. An unchanged line waits out the longer repeat window instead.
    */
-  private alreadySaid(chatId: number, line: AlertLine, now: number): boolean {
-    const row = this.selectRecentNotice.get(chatId, subjectOf(line)) as
-      { sent_at: number; distance_km: number } | undefined;
+  private async alreadySaid(chatId: number, line: AlertLine, now: number): Promise<boolean> {
+    const { rows } = await this.db.query<{ sent_at: number; distance_km: number }>(
+      `SELECT sent_at, distance_km FROM notice_ledger WHERE chat_id = $1 AND subject = $2`,
+      [chatId, subjectOf(line)],
+    );
+    const row = rows[0];
     if (row === undefined) return false;
 
     const since = now - row.sent_at;

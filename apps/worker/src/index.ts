@@ -6,6 +6,8 @@ import { startServer } from './http/server.js';
 import { logger } from './logger.js';
 import { createExtractor } from './parser/llm.js';
 import { loadGazetteer } from './db/gazetteer.js';
+import { mapPublisher } from './map/publish.js';
+import { mapLoginMessage, revokeRemovedUsers } from './map/login.js';
 import { ParseWorker } from './parser/worker.js';
 import { Poller } from './telegram/poller.js';
 import { TelegramApi } from './bot/api.js';
@@ -25,13 +27,13 @@ async function main(): Promise<void> {
     'horizont-alert starting',
   );
 
-  const db = openDb(config.DB_PATH);
-  // A fresh volume has no gazetteer, and without one the parser resolves nothing
+  const db = await openDb(config.DATABASE_URL);
+  // A fresh database has no gazetteer, and without one the parser resolves nothing
   // while the service still reports healthy.
-  seedGazetteerIfEmpty(db);
+  await seedGazetteerIfEmpty(db);
   setRaionLogger(logger);
   // One in-memory copy, shared. Restart after `build:toponyms` to pick up new names.
-  const gazetteer = loadGazetteer(db);
+  const gazetteer = await loadGazetteer(db);
   logger.info({ settlements: gazetteer.size }, 'gazetteer loaded');
   const repo = new Repo(db);
 
@@ -49,12 +51,13 @@ async function main(): Promise<void> {
     maxBackoffMs: config.MAX_BACKOFF_MS,
     gapFillMaxPages: config.GAP_FILL_MAX_PAGES,
   });
-  poller.start();
+  await poller.start();
 
   const parser = new ParseWorker(gazetteer, repo, await createExtractor(gazetteer), {
     batchSize: config.PARSE_BATCH_SIZE,
     intervalMs: config.PARSE_INTERVAL_MS,
     llmBudgetPerBatch: config.LLM_BUDGET_PER_BATCH,
+    publisher: mapPublisher(db),
   });
   parser.start();
 
@@ -81,12 +84,15 @@ async function main(): Promise<void> {
      * Filling it in here means they do not have to re-send their location to get the
      * behaviour they were promised.
      */
-    const filled = users.backfillRaions((lat, lon) => raionAt(lat, lon)?.match ?? null, Date.now());
+    const filled = await users.backfillRaions((lat, lon) => raionAt(lat, lon)?.match ?? null, Date.now());
     if (filled > 0) logger.info({ users: filled }, 'raion backfilled for existing users');
 
     const state = new AppState(db);
+    await revokeRemovedUsers(db);
+    if (!config.PUBLIC_URL) logger.info('PUBLIC_URL not set — the bot issues no map logins');
     const bot = new Bot(api, users, state, gazetteer, {
       pollTimeoutSeconds: config.BOT_POLL_TIMEOUT_SECONDS,
+      ...(config.PUBLIC_URL ? { mapLogin: mapLoginMessage(db, config.PUBLIC_URL) } : {}),
     });
     bot.start();
     stoppables.push(bot);
@@ -127,16 +133,13 @@ async function main(): Promise<void> {
     token: config.ALERTS_IN_UA_TOKEN,
     intervalMs: config.ALERTS_POLL_INTERVAL_MS,
     timeoutMs: 15_000,
+    publishMap: true,
   });
   watcher.start();
   stoppables.push(watcher);
 
-  /*
-   * Backups and retention live in the same process because the volume attaches to
-   * exactly one service, and SQLite is single-writer.
-   */
+  // Retention. Backups are Railway Postgres's own; nothing to do for them here.
   const maintenance = new Maintenance(db, {
-    backup: { dir: config.BACKUP_DIR, keep: config.BACKUP_KEEP },
     retentionMs: config.RETENTION_DAYS * 86_400_000,
     intervalMs: config.MAINTENANCE_INTERVAL_MS,
   });
@@ -161,7 +164,7 @@ async function main(): Promise<void> {
     await parser.stop();
     for (const stoppable of stoppables) await stoppable.stop();
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    closeDb(db);
+    await closeDb(db);
 
     logger.info('shutdown complete');
     process.exit(0);
@@ -182,4 +185,9 @@ async function main(): Promise<void> {
   });
 }
 
-void main();
+main().catch((error: unknown) => {
+  // A boot failure (database unreachable, migration rejected) must be loud and fatal,
+  // so the platform restarts us rather than leaving a half-started process.
+  logger.error({ err: error instanceof Error ? error.message : String(error) }, 'startup failed');
+  process.exit(1);
+});

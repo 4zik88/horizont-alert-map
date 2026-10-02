@@ -9,13 +9,11 @@ import { logger } from '../logger.js';
  * window, and the parser corpus is a development concern rather than a production one.
  *
  * `targets` has `ON DELETE CASCADE` from `messages`, so deleting a message removes
- * everything derived from it in one statement. `foreign_keys = ON` is set on every
- * connection, which is what makes that true — without it the cascade silently does
- * nothing and orphans accumulate.
+ * everything derived from it in one statement. Postgres always enforces it.
  */
-export function pruneMessages(db: Db, olderThanMs: number, now = Date.now()): number {
+export async function pruneMessages(db: Db, olderThanMs: number, now = Date.now()): Promise<number> {
   const cutoff = now - olderThanMs;
-  const removed = db.prepare('DELETE FROM messages WHERE posted_at < ?').run(cutoff).changes;
+  const { rowCount: removed } = await db.query('DELETE FROM messages WHERE posted_at < $1', [cutoff]);
 
   if (removed > 0) {
     logger.info({ removed, olderThanDays: Math.round(olderThanMs / 86_400_000) }, 'messages pruned');
@@ -34,20 +32,22 @@ export function pruneMessages(db: Db, olderThanMs: number, now = Date.now()): nu
 /** Model answers are worth keeping while their messages are; a month covers both. */
 const LLM_CACHE_KEEP_MS = 30 * 24 * 60 * 60_000;
 
-export function pruneLlmCache(db: Db, now = Date.now()): number {
-  const removed = db
-    .prepare('DELETE FROM llm_cache WHERE created_at < ?')
-    .run(now - LLM_CACHE_KEEP_MS).changes;
+export async function pruneLlmCache(db: Db, now = Date.now()): Promise<number> {
+  const { rowCount: removed } = await db.query(
+    'DELETE FROM llm_cache WHERE created_at < $1',
+    [now - LLM_CACHE_KEEP_MS],
+  );
   if (removed > 0) logger.info({ removed }, 'llm cache pruned');
   return removed;
 }
 
 const LEDGER_KEEP_MS = 24 * 60 * 60_000;
 
-export function pruneNoticeLedger(db: Db, now = Date.now()): number {
-  const removed = db
-    .prepare('DELETE FROM notice_ledger WHERE sent_at < ?')
-    .run(now - LEDGER_KEEP_MS).changes;
+export async function pruneNoticeLedger(db: Db, now = Date.now()): Promise<number> {
+  const { rowCount: removed } = await db.query(
+    'DELETE FROM notice_ledger WHERE sent_at < $1',
+    [now - LEDGER_KEEP_MS],
+  );
 
   if (removed > 0) logger.info({ removed }, 'notice ledger pruned');
   return removed;

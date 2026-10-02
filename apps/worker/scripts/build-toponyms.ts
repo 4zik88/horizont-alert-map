@@ -14,6 +14,7 @@ import { dirname } from 'node:path';
 import { config } from '../src/config.js';
 import { closeDb, openDb } from '../src/db/index.js';
 import { logger } from '../src/logger.js';
+import { insertToponyms, type ToponymInput } from '../src/db/toponyms.js';
 import { generateForms, normalise } from '@horizont/parser';
 import { CODE_TO_OBLAST } from '@horizont/parser';
 
@@ -196,73 +197,58 @@ async function main(): Promise<void> {
   const nodes = await collect();
   logger.info({ nodes: nodes.length }, 'overpass fetch complete');
 
-  const db = openDb(config.DB_PATH);
+  const db = await openDb(config.DATABASE_URL);
   try {
-    db.exec('DELETE FROM toponym_forms; DELETE FROM toponyms;');
+    const entries: ToponymInput[] = [];
 
-    const insertToponym = db.prepare(`
-      INSERT INTO toponyms (osm_id, name, name_norm, oblast, place, population, lat, lon, rank)
-      VALUES (@osmId, @name, @nameNorm, @oblast, @place, @population, @lat, @lon, @rank)
-    `);
-    const insertForm = db.prepare(
-      `INSERT OR IGNORE INTO toponym_forms (form, toponym_id) VALUES (?, ?)`,
-    );
+    for (const node of nodes) {
+      const tags = node.tags ?? {};
+      /*
+       * `name:uk` first, `name` second.
+       *
+       * In occupied territory OSM's `name` is Russian — Crimea comes through as
+       * Гвардейское, Керчь, Євпаторія as Евпатория — while the channels write
+       * Ukrainian throughout. 327 places were indexed under a spelling that never
+       * appears in a message, so a launch reported from the Hvardiiske airbase
+       * matched a same-named village in Khmelnytskyi oblast instead and drew a
+       * marker 600 km from the real place.
+       */
+      const name = tags['name:uk'] ?? tags['name'];
+      const place = tags['place'];
+      if (!name || !place) continue;
+      // Latin-only names are transliterations of somewhere else; skip them.
+      if (!/[\p{Script=Cyrillic}]/u.test(name)) continue;
 
-    let toponyms = 0;
-    let forms = 0;
+      const pop = population(tags);
+      // Index the other spelling too: a message quoting the Russian name of an
+      // occupied place should still resolve.
+      const spellings = new Set([name, tags['name'], tags['name:uk']].filter(
+        (v): v is string => typeof v === 'string' && /[\p{Script=Cyrillic}]/u.test(v),
+      ));
+      entries.push({
+        osmId: node.id,
+        name,
+        nameNorm: normalise(name),
+        oblast: oblastOf(tags),
+        place,
+        population: pop,
+        lat: node.lat,
+        lon: node.lon,
+        rank: rankOf(place, pop),
+        forms: [...spellings].flatMap((spelling) => generateForms(spelling)),
+      });
+    }
 
-    db.transaction(() => {
-      for (const node of nodes) {
-        const tags = node.tags ?? {};
-        /*
-         * `name:uk` first, `name` second.
-         *
-         * In occupied territory OSM's `name` is Russian — Crimea comes through as
-         * Гвардейское, Керчь, Євпаторія as Евпатория — while the channels write
-         * Ukrainian throughout. 327 places were indexed under a spelling that never
-         * appears in a message, so a launch reported from the Hvardiiske airbase
-         * matched a same-named village in Khmelnytskyi oblast instead and drew a
-         * marker 600 km from the real place.
-         */
-        const name = tags['name:uk'] ?? tags['name'];
-        const place = tags['place'];
-        if (!name || !place) continue;
-        // Latin-only names are transliterations of somewhere else; skip them.
-        if (!/[\p{Script=Cyrillic}]/u.test(name)) continue;
+    // Replaced wholesale, in one transaction: a crash midway leaves the old gazetteer.
+    const { toponyms, forms } = await db.transaction(async (tx) => {
+      await tx.exec('DELETE FROM toponym_forms; DELETE FROM toponyms;');
+      return insertToponyms(tx, entries);
+    });
 
-        const pop = population(tags);
-        const info = insertToponym.run({
-          osmId: node.id,
-          name,
-          nameNorm: normalise(name),
-          oblast: oblastOf(tags),
-          place,
-          population: pop,
-          lat: node.lat,
-          lon: node.lon,
-          rank: rankOf(place, pop),
-        });
-
-        const id = Number(info.lastInsertRowid);
-        toponyms++;
-        // Index the other spelling too: a message quoting the Russian name of an
-        // occupied place should still resolve.
-        const spellings = new Set([name, tags['name'], tags['name:uk']].filter(
-          (v): v is string => typeof v === 'string' && /[\p{Script=Cyrillic}]/u.test(v),
-        ));
-        for (const spelling of spellings) {
-          for (const form of generateForms(spelling)) {
-            insertForm.run(form, id);
-            forms++;
-          }
-        }
-      }
-    })();
-
-    db.exec('ANALYZE;');
+    await db.exec('ANALYZE toponyms; ANALYZE toponym_forms;');
     logger.info({ toponyms, forms }, 'gazetteer built');
   } finally {
-    closeDb(db);
+    await closeDb(db);
   }
 }
 

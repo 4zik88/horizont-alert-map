@@ -1,17 +1,22 @@
 # horizont-alert
 
-Private air-target tracking for Ukraine. Closed tool for a handful of people — no
-registration, no public surface at all.
+Private warnings about enemy air targets and air-raid alerts in Ukraine, for a closed
+group of about ten people. No registration and no public surface: access is a Telegram
+allowlist.
 
-Polls the public HTML preview of three Telegram channels, extracts structured targets
-(type, direction, settlement with coordinates), and warns a closed list of users by
-Telegram DM when a target is near them or heading their way. Air-raid alerts are
-delivered per **raion**, from the location each user shared with the bot.
+Two ways to read the same data:
 
-Telegram is the whole product. There was a Leaflet PWA map behind a secret link; it
-was removed. It was a second surface to keep correct — its own auth, its own cookie-jar
-behaviour on iOS, its own rendering rules — for information the bot already puts on the
-phone that is already in the reader's hand. `git log` has it if it is ever wanted back.
+- **The Telegram bot** warns each person by DM when a target is near them or heading
+  their way, and announces air-raid alerts for **their raion**, from the location they
+  shared with the bot.
+- **The map** (an installable PWA) shows alerts by raion and oblast, the reported
+  targets and their recent paths, an approximate 10/20/30-minute projection, an
+  approximate time to reach the reader, and the last three hours on a timeline. It
+  updates live and keeps working offline from the last state it saw.
+
+Both read public sources only, and both say so: every screen carries "дані з відкритих
+джерел, не є офіційним попередженням", and every number that is an estimate is labelled
+as one.
 
 ## Sources
 
@@ -21,8 +26,7 @@ ever pulled from єППО or any closed system.
 
 ## Requirements
 
-Node 22 LTS (pinned in `.nvmrc`). Newer Node will not match the `better-sqlite3`
-prebuild that Railway uses:
+Node 22 LTS (pinned in `.nvmrc`; Node 20 is past end of life), pnpm 10 and PostgreSQL 16.
 
 ```bash
 fnm use          # or: nvm use
@@ -32,79 +36,95 @@ pnpm install
 ## Running
 
 ```bash
-cp .env.example .env
-pnpm build:toponyms      # one-off: builds the all-Ukraine gazetteer from OSM
-pnpm backfill            # one-off: ~500 messages per channel
-pnpm dev                 # poller + parser + /healthz, pretty logs
+cp .env.example .env     # set DATABASE_URL to a Postgres database
+pnpm build:toponyms      # optional: refresh the all-Ukraine gazetteer from OSM
+pnpm backfill            # optional: ~500 messages per channel, a corpus to develop against
+PORT=8081 pnpm dev:worker  # poller, parser, bot, alerts, map publishing; /healthz on 8081
+pnpm dev:api             # the API on 8080: auth, snapshot, history, WebSocket
+pnpm dev:web             # the map with hot reload; proxies /api, /ws, /auth to 8080
 pnpm test
 pnpm typecheck
 ```
 
-`pnpm build:toponyms` must run before the parser is useful — it populates
-`toponyms`/`toponym_forms` from Overpass and takes a few minutes. Re-run it whenever
-you want fresher OSM data; it replaces the tables wholesale.
+The worker and the API both read `PORT`; locally they need different ones. Both apply
+the database migrations at boot, and the worker seeds the gazetteer into an empty
+database, so a fresh Postgres needs no manual setup. `pnpm build:toponyms` replaces the
+gazetteer tables from Overpass and takes a few minutes; restart the worker afterwards,
+because the gazetteer is held in memory.
 
-`pnpm backfill` is safe to re-run — ingest is idempotent. Its real purpose is to
-build a corpus of real messages to develop the step-2 parser against.
+`pnpm backfill` is safe to re-run — ingest is idempotent.
 
-`GET /healthz` returns 200 only while every enabled channel has polled successfully
-within five intervals, and 503 otherwise, so a poller that has silently stopped gets
-restarted rather than lingering.
+The map has a demo mode that needs no backend: `pnpm dev:web`, then open
+`/?demo=1`. It uses fixtures covering every marker kind, alert level and source state.
+
+To log in to a local map without a bot, insert a user and issue a login the way the bot
+does (`issueLogin` in `packages/db/src/auth.ts`), then open `/auth?t=<token>` or type the
+code. Set `COOKIE_SECURE=false` for plain HTTP.
+
+`GET /healthz` on the worker returns 200 only while every enabled channel has polled
+successfully within five intervals, and 503 otherwise, so a poller that has silently
+stopped gets restarted rather than lingering. The API's `/healthz` checks the database.
 
 ## Deploying to Railway
 
-One service, one process. Two settings are not optional:
+Three services from this one repository:
 
-1. **Mount a Volume at `/data`** and set `DB_PATH=/data/app.db`. Railway's container
-   filesystem is ephemeral — without the volume the database resets on every redeploy,
-   and it will look like it is working.
-2. **Set replicas to 1.** SQLite is single-writer and WAL is not safe across
-   containers; two replicas means two pollers double-writing.
+| Service | Config file | Start | Notes |
+|---|---|---|---|
+| Postgres | — | — | Railway's Postgres; backups are its own |
+| worker | `railway.json` | `pnpm start:worker` | **replicas = 1**: two would double-poll and double-send |
+| api | `railway.api.json` | `pnpm start:api` | set the service's config-as-code path to `railway.api.json`; give it the public domain |
 
-Also set `NODE_VERSION=22.23.2`. Build `pnpm install --frozen-lockfile && pnpm build`,
-start `pnpm start` (the compiled worker, run from the repo root),
-healthcheck `/healthz` (all in `railway.json`).
+Both build with `pnpm install --frozen-lockfile && pnpm build` and need
+`NODE_VERSION=22.23.2` and `DATABASE_URL` (a reference to the Postgres service's
+variable). The worker also needs `TELEGRAM_BOT_TOKEN`, the allowlist and `PUBLIC_URL`
+(the api service's public URL, for the login links). The API needs nothing else in
+production: cookies are `Secure` there by default.
 
-Railway volumes are not backed up. A nightly `VACUUM INTO` is worth adding before this
-holds anything you would miss.
+To move an existing SQLite database across once, `pnpm import:sqlite <path-to-app.db>`
+copies it into an empty `DATABASE_URL` database with ids preserved (`--force` replaces
+rows already there). Then requeue parsing so stored messages get this parser's fixes:
+
+```sql
+UPDATE messages SET parse_state = 'pending' WHERE parser_version < 9;
+```
 
 ## Layout
 
-A pnpm monorepo. The packages are pure and storage-agnostic; the worker owns the
-database, the network and the logger. `apps/api` and `apps/web` arrive with the map
-stage — see `docs/stage-1-design.md`.
+A pnpm monorepo. The packages are pure and storage-agnostic; the apps own the database,
+the network and the logs. The approved design is in `docs/stage-1-design.md`; the data
+source survey in `docs/data-sources.md`.
 
 ```
-apps/worker/src/config.ts          env schema; parse-or-exit, secrets never logged
-apps/worker/src/logger.ts          pino + redaction of user coordinates and chat ids
-apps/worker/src/db/migrations.ts   append-only schema, versioned by PRAGMA user_version
-apps/worker/src/db/repo.ts         every SQL statement in the project
-apps/worker/src/db/gazetteer.ts    loads the toponym tables into the in-memory gazetteer
-apps/worker/src/telegram/          ingest (idempotent, edit-aware), poller, policy
-apps/worker/src/parser/worker.ts   the parse queue, the LLM budget and cache
-apps/worker/src/parser/llm-*.ts    Groq and Anthropic providers
-apps/worker/src/notify/            proximity (pure) and the notifier
-apps/worker/src/alerts/watcher.ts  raion air-raid transitions -> DMs
-apps/worker/src/http/server.ts     /healthz, and nothing else
+apps/worker/    the poller, parser queue, bot, notifier, alert watcher, map publishing
+  src/telegram/         ingest (idempotent, edit-aware), poller, policy
+  src/parser/worker.ts  the parse queue, the LLM budget and cache
+  src/notify/           proximity (pure) and the notifier
+  src/alerts/watcher.ts raion air-raid transitions -> DMs
+  src/map/              tracks and alert intervals for the map; bot map logins
+  src/db/               the worker's SQL; the gazetteer loader
+apps/api/       Fastify: login, snapshot, history, regions, WebSocket hub, the built map
+apps/web/       Vite + TypeScript + MapLibre GL: the map, its service worker, demo mode
 
-packages/parser/src/parsePage.ts   pure HTML -> messages; the tricky part
-packages/parser/src/sensitive.ts   impact / air-defence deny-list
-packages/parser/src/message.ts     message -> targets: lost/stand-down lines, time, LLM gate
-packages/parser/src/rules.ts       line -> targets; the other tricky part
-packages/parser/src/gazetteer.ts   in-memory place lookup, ranking, fuzzy fallback
-packages/parser/src/morphology.ts  inflected forms for every settlement name
-packages/parser/src/extraction.ts  the LLM contract: schema, prompt, gazetteer grounding
-packages/parser/src/time.ts        Kyiv clock times in messages -> instants
-
-packages/geo/src/sphere.ts         bearing, distance, destination point
-packages/geo/src/forecast.ts       10/20/30-minute projection, closest approach, ETA
-packages/geo/src/raions.ts         point-in-polygon; which raion a reader is in (Node only)
-packages/geo/data/                 gazetteer seed and raion polygons
+packages/contract/  the wire types between api and web (types only)
+packages/db/        Postgres: schema migrations, pg/PGlite adapters, event log,
+                    map publishing and reading, login and sessions
+packages/parser/    Telegram preview HTML and message text -> targets
+  parsePage.ts        HTML -> messages
+  sensitive.ts        impact / air-defence deny-list
+  message.ts          lost/stand-down lines, stated time, the LLM gate
+  rules.ts            line -> targets
+  gazetteer.ts        in-memory place lookup, ranking, fuzzy fallback
+  morphology.ts       inflected forms for every settlement name
+  extraction.ts       the LLM contract: schema, prompt, gazetteer grounding
+packages/geo/       bearing, distance, projection, ETA, the tracker; raion polygons
+  data/               gazetteer seed, raion polygons, the simplified map regions
 ```
 
 Dev scripts run from the repo root with `--conditions=source`, so packages are used
-straight from their TypeScript sources; `pnpm build` compiles them in dependency
-order for production.
+straight from their TypeScript sources; `pnpm build` compiles them in dependency order.
+Tests run on PGlite (Postgres compiled to WASM, in process), so `pnpm test` needs no
+database server.
 
 ## Things the markup will do to you
 
@@ -114,23 +134,23 @@ by a test in `test/parsePage.test.ts`:
 - **Reply previews reuse the message-text class.** A quoted post carries
   `js-message_reply_text`, a real body carries `js-message_text`. Message 58360 quotes
   58359, and the quoted text reads exactly like a live target report — attribute it to
-  the wrong message and step 2 invents a target that does not exist.
+  the wrong message and the parser invents a target that does not exist.
 - **Reactions are a sibling div.** A regex over the message block swallows `983👍66🫡`
   into the text; DOM-scoped extraction does not.
 - **Line breaks are load-bearing.** Channels list one target per line under a sticky
-  oblast heading, so `<br/>` must survive as `\n` or step 2 loses the grouping.
+  oblast heading, so `<br/>` must survive as `\n` or the parser loses the grouping.
 - **Post ids are not contiguous.** Deleted posts leave permanent holes, so nothing may
   treat a missing id as evidence that a message was missed. Gap-fill stops when a page
   yields no id newer than the cursor, never on contiguity.
 
 `@KozakChornobay` also edits nearly every message as a target moves, so dedup is by
 content hash, not by id alone: an edit rewrites the row and sets `parse_state` back to
-`pending` so step 2 re-parses it.
+`pending` so the parser re-parses it.
 
 Run `pnpm fixtures:refresh` when a parser test starts failing — it re-downloads all
 three fixtures so you can diff the markup.
 
-## Parsing (step 2)
+## Parsing
 
 `parse_state = 'pending'` is a work queue. The worker takes a batch, runs the rules,
 and falls back to Claude only for what the rules cannot resolve. Anything still
@@ -257,7 +277,7 @@ Bump `PARSER_VERSION` in `apps/worker/src/parser/worker.ts` and requeue to re-pa
 UPDATE messages SET parse_state = 'pending' WHERE parser_version < 9;
 ```
 
-## The bot (step 3)
+## The bot
 
 Long polling, not webhooks: one Railway service, one replica, so there is no public
 callback to register. Commands are `/start`, `/radius <km>`, `/status`, `/stop`, plus
@@ -358,6 +378,81 @@ clear everywhere", which would fire a false all-clear to everyone at once.
 
 Without `ALERTS_IN_UA_TOKEN` this part simply does not start.
 
+## The map
+
+### What a marker means
+
+The parser stores what each message said. The map draws only what it means:
+
+- **A position** — "над", "повз", "через" — is drawn filled. It is the only kind that is
+  projected forward or given a time to reach anyone.
+- **A destination** — "курсом на X" — is drawn hollow, labelled "→", beside the town on
+  the side it is coming from, with "курс на X · ще не там". The target is not there and
+  may never get there, so it gets no projection and no arrival time; near the reader it
+  is listed with a distance only. Most live markers are this kind.
+- **A launch** is drawn at an enemy launch site, never as a target position.
+- **An area** — a report that names only an oblast or a sea — is drawn at the region's
+  centre with "≈", "точне місце невідоме", and is never projected. Without this,
+  "на півночі Чернігівщини, курс на південь" became a point on Chernihiv city with a
+  forecast toward Kyiv (found during the live browser check).
+
+A report older than 25 minutes turns grey and loses its projection; after an hour it
+leaves the map. The projection uses the type's typical speed (Shahed 180 km/h, jet drone
+600, cruise missile 800) — the same numbers the bot uses — and is always labelled
+"орієнтовно". Ballistic missiles are never projected.
+
+### Tracks
+
+Sightings of one group are joined into a track by `packages/geo/src/tracker.ts`: same
+type, a hop plausible for the type's speed in the time elapsed (with slack, because a
+"курсом на" point is a town, not the target), and a direction that agrees with the
+track's heading. Anything doubtful starts a new track: a wrong join draws a flight that
+never happened. An edited message re-joins its sightings and retracts what it moved.
+
+### Alerts
+
+Each poll the bot accepts is mirrored into alert intervals: an oblast-wide alert paints
+the oblast red, a named raion its own polygon, and hromadas or cities — which have no
+polygon — make the oblast yellow with the names listed. Intervals are what the timeline
+replays. Kyiv city has its own polygon (it belongs to no raion).
+
+### Access
+
+The bot's `/start` and `/map` replies carry a one-time link and the same grant as a short
+code, both valid for 10 minutes. The code exists because an installed iPhone app has its
+own cookie jar: a link opened in Safari or Telegram never logs the installed app in.
+Opening the link shows a button and only the POST behind it logs in, so link previews
+and prefetchers cannot spend it. Sessions last 90 days, sliding. Only hashes of tokens
+and session ids are stored. Map access follows the bot's allowlist: someone removed from
+it loses their sessions at the next worker boot. `/stop` turns warnings off but does not
+lock anyone out of the map.
+
+### Live updates and offline
+
+The worker writes each change and an event in one transaction; Postgres `NOTIFY` wakes
+the API, which reads the event log by sequence number and pushes diffs over a WebSocket.
+A client that reconnects sends its last sequence number and receives only what it
+missed, or a snapshot if that has been pruned (after six hours). A backstop poll covers a
+dropped `LISTEN` connection.
+
+The service worker keeps the app shell, the last API responses and visited basemap
+tiles; the last snapshot is also kept in local storage, so the app opens with the last
+known state and says how old it is.
+
+### Privacy
+
+The reader's location for "time to reach you" comes from the browser and never leaves
+the device. The server never sends anyone's coordinates to a browser; the location
+shared with the bot stays in the database for the bot's own warnings.
+
+### Known limits
+
+- At country zoom on a phone, markers around a busy area overlap; zoom in or use
+  "Тільки моя область".
+- Basemap: OpenFreeMap's dark style, keyless. It references one sprite image it does not
+  ship, which logs a harmless console warning.
+- Not yet tested on a real device or as an installed app, and Web Push is not built.
+
 ## Where alert data comes from
 
 Default is **alerts.in.ua's public situation report** (`/v3/alerts/active.md`) —
@@ -379,16 +474,25 @@ false відбій to every user at once.
   `packages/parser/src/sensitive.ts` are flagged `is_sensitive` at ingest; they must never become
   targets or reach anyone. The raw text is still stored so a false positive is
   recoverable — the flag is advisory and deliberately over-broad.
-- **User coordinates live only in SQLite.** They are never logged: `apps/worker/src/logger.ts`
+- **User coordinates live only in the database.** They are never sent to a browser,
+  and never logged: `apps/worker/src/logger.ts`
   redacts `lat`, `lon` and `chat_id` paths. The bot never echoes a location back
   either — it would then sit in Telegram's history and in any screenshot of the chat —
   and `bot:check` prints oblast and radius but never coordinates.
+- **Login secrets are never logged.** The API logs `/auth` requests as
+  `t=[redacted]`; codes travel only in a POST body.
 - Message text *is* logged at debug level. It is public channel content, and it is how
-  the step-2 parser gets debugged against real traffic.
+  the parser gets debugged against real traffic.
 
 ## Possible next steps
 
+- **The official Ukraine Alarm API** as the primary alert source, with alerts.in.ua as
+  the cross-check — see `docs/data-sources.md`. It needs a key requested by a person.
+- **Web Push** as a second warning channel (stage 4).
+- **Marker clustering** at low zoom.
+- **Two more channels** (@povitryanatrivogaaa, @monitorwarr), only after their formats
+  are in the parser's corpus tests.
 - **Hromada-level warnings.** Sub-raion alerts (the Nikopol area is the usual case)
-  name no polygon, so the whole oblast is treated as warned. A hromada → raion table
+  name no polygon, so the bot treats the whole oblast as warned. A hromada → raion table
   would narrow those to the right raion.
 - **Quiet hours.** Nothing currently distinguishes 03:00 from 15:00.

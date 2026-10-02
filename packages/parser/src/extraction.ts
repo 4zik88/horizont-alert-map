@@ -131,6 +131,7 @@ export function toParsedTargets(
         toName: to.name,
         toLat: to.lat,
         toLon: to.lon,
+        toArea: to.kind === 'oblast',
         fromName: from?.name ?? null,
         fromLat: from?.lat ?? null,
         fromLon: from?.lon ?? null,

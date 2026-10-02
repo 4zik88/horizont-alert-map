@@ -7,25 +7,27 @@
  * Read-only — it parses in memory and writes nothing. The "top misses" list is the
  * useful part: it is ranked by frequency, so the next rule worth writing is at the top.
  */
-import Database from 'better-sqlite3';
+import { connect } from '@horizont/db';
 import { config } from '../src/config.js';
 import { loadGazetteer } from '../src/db/gazetteer.js';
 import { parseMessage } from '@horizont/parser';
 import { stripBoilerplate } from '@horizont/parser';
 import { BOUNDARY_LEFT } from '@horizont/parser';
 
-const db = new Database(config.DB_PATH, { readonly: true });
-const gazetteer = loadGazetteer(db);
+// Read-only: connect without migrating, and only ever SELECT.
+const db = connect(config.DATABASE_URL);
+const gazetteer = await loadGazetteer(db);
 
-const toponyms = db.prepare('SELECT COUNT(*) c FROM toponyms').get() as { c: number };
-if (toponyms.c === 0) {
+const { rows: [toponyms] } = await db.query<{ c: number }>('SELECT COUNT(*) AS c FROM toponyms');
+if (toponyms!.c === 0) {
   console.error('Gazetteer is empty — run `npm run build:toponyms` first.');
   process.exit(1);
 }
 
-const messages = db
-  .prepare(`SELECT text FROM messages WHERE is_sensitive = 0 AND text <> ''`)
-  .all() as { text: string }[];
+const { rows: messages } = await db.query<{ text: string }>(
+  `SELECT text FROM messages WHERE is_sensitive = 0 AND text <> '' ORDER BY id`,
+);
+await db.close();
 
 let parsed = 0;
 let unparsed = 0;

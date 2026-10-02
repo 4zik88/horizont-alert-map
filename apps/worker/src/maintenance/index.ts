@@ -1,13 +1,11 @@
 import type { Db } from '../db/index.js';
 import { AppState } from '../db/users.js';
 import { logger } from '../logger.js';
-import { runBackup, type BackupOptions } from './backup.js';
 import { pruneLlmCache, pruneMessages, pruneNoticeLedger } from './retention.js';
 
 const LAST_RUN_KEY = 'maintenance_last_run';
 
 export interface MaintenanceOptions {
-  backup: BackupOptions;
   /** Messages older than this are deleted, along with everything derived from them. */
   retentionMs: number;
   /** How often the work should happen — daily in practice. */
@@ -15,7 +13,10 @@ export interface MaintenanceOptions {
 }
 
 /**
- * Daily housekeeping: back the database up, then drop messages past retention.
+ * Daily housekeeping: drop messages, warnings and model answers past retention.
+ *
+ * Backups are not done here: Postgres on Railway has provider-managed backups, which
+ * replaced the nightly `VACUUM INTO` copy this used to take of the SQLite file.
  *
  * Driven by a timestamp in `app_state` rather than a wall-clock schedule, because
  * this process restarts on every deploy. A cron-style "run at 03:00" would be skipped
@@ -40,11 +41,10 @@ export class Maintenance {
   }
 
   start(): void {
-    // Not immediately on boot: a crash loop would otherwise back up on every restart.
+    // Not immediately on boot: a crash loop would otherwise prune on every restart.
     this.schedule(60_000);
     logger.info(
-      { dir: this.opts.backup.dir, keep: this.opts.backup.keep,
-        retentionDays: Math.round(this.opts.retentionMs / 86_400_000) },
+      { retentionDays: Math.round(this.opts.retentionMs / 86_400_000) },
       'maintenance scheduled',
     );
   }
@@ -63,9 +63,9 @@ export class Maintenance {
 
   private async tick(): Promise<void> {
     try {
-      this.runIfDue();
+      await this.runIfDue();
     } catch (error) {
-      // Never fatal: a failed backup must not take the alerting service down with it.
+      // Never fatal: failed housekeeping must not take the alerting service down with it.
       logger.error(
         { err: error instanceof Error ? error.message : String(error) },
         'maintenance failed',
@@ -75,17 +75,16 @@ export class Maintenance {
   }
 
   /** Run the work if enough time has passed. Pure enough to call from a test. */
-  runIfDue(now = Date.now()): boolean {
-    const last = this.state.getNumber(LAST_RUN_KEY, 0);
-    if (last > 0 && now - last < this.opts.intervalMs) return false;
-
+  async runIfDue(now = Date.now()): Promise<boolean> {
     this.running = true;
     try {
-      runBackup(this.db, this.opts.backup, now);
-      pruneMessages(this.db, this.opts.retentionMs, now);
-      pruneNoticeLedger(this.db, now);
-      pruneLlmCache(this.db, now);
-      this.state.setNumber(LAST_RUN_KEY, now, now);
+      const last = await this.state.getNumber(LAST_RUN_KEY, 0);
+      if (last > 0 && now - last < this.opts.intervalMs) return false;
+
+      await pruneMessages(this.db, this.opts.retentionMs, now);
+      await pruneNoticeLedger(this.db, now);
+      await pruneLlmCache(this.db, now);
+      await this.state.setNumber(LAST_RUN_KEY, now, now);
       return true;
     } finally {
       this.running = false;
@@ -93,5 +92,4 @@ export class Maintenance {
   }
 }
 
-export { runBackup, prune, backupName } from './backup.js';
 export { pruneLlmCache, pruneMessages, pruneNoticeLedger } from './retention.js';

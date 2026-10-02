@@ -1,5 +1,6 @@
 import type { Repo, PendingMessage, TargetParams } from '../db/repo.js';
 import { logger } from '../logger.js';
+import type { MapPublisher } from '../map/publish.js';
 import {
   DISABLED_EXTRACTOR,
   parseMessage,
@@ -19,6 +20,8 @@ export interface WorkerOptions {
   intervalMs: number;
   /** Cap on LLM calls per batch, so a bad day cannot run up an unbounded bill. */
   llmBudgetPerBatch: number;
+  /** Joins saved targets into map tracks. Absent in tests that do not need the map. */
+  publisher?: MapPublisher;
 }
 
 /**
@@ -89,8 +92,8 @@ export class ParseWorker {
     let llmCalls = 0;
 
     try {
-      const skipped = this.repo.skipUnparseable(Date.now(), PARSER_VERSION);
-      const batch = this.repo.pendingMessages(this.opts.batchSize);
+      const skipped = await this.repo.skipUnparseable(Date.now(), PARSER_VERSION);
+      const batch = await this.repo.pendingMessages(this.opts.batchSize);
 
       for (const message of batch) {
         const result = await this.parseOne(message, llmCalls < this.opts.llmBudgetPerBatch);
@@ -147,6 +150,7 @@ export class ParseWorker {
       toName: t.toName,
       toLat: t.toLat,
       toLon: t.toLon,
+      toArea: t.toArea === true,
       courseDeg: t.courseDeg,
       confidence: t.confidence,
       source,
@@ -154,13 +158,15 @@ export class ParseWorker {
       createdAt: now,
     }));
 
-    this.repo.saveTargets(
+    const previousTracks = (await this.opts.publisher?.beforeSave(message.id)) ?? [];
+    await this.repo.saveTargets(
       message.id,
       rows,
       rows.length > 0 ? 'parsed' : 'unparsed',
       now,
       PARSER_VERSION,
     );
+    await this.opts.publisher?.afterSave(message.id, previousTracks);
 
     return { targets, usedLlm };
   }
@@ -176,7 +182,7 @@ export class ParseWorker {
     message: PendingMessage,
     budgetLeft: boolean,
   ): Promise<{ targets: ParsedTarget[] | null; called: boolean }> {
-    const cached = this.repo.llmCached(message.content_hash);
+    const cached = await this.repo.llmCached(message.content_hash);
     if (cached !== undefined) return { targets: revive(cached, message.posted_at), called: false };
 
     if (this.llm === DISABLED_EXTRACTOR || !budgetLeft || message.llm_called_at !== null) {
@@ -197,7 +203,7 @@ export class ParseWorker {
     }
 
     if (answer !== null) {
-      this.repo.recordLlmCall(
+      await this.repo.recordLlmCall(
         message.id,
         message.content_hash,
         this.llm.name ?? 'llm',

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test, describe, afterEach } from 'node:test';
 import { loadGazetteer } from '../src/db/gazetteer.js';
+import { after } from 'node:test';
 import { memoryDb, seedGazetteer } from './helpers.js';
 
 // config reads process.env once at import, so the key must be set before loading it.
@@ -8,11 +9,12 @@ process.env['GROQ_API_KEY'] = 'test-key';
 process.env['GROQ_MODEL'] = 'test-model';
 const { createGroqExtractor } = await import('../src/parser/llm-groq.js');
 
-const db = memoryDb();
-seedGazetteer(db, [
+const db = await memoryDb();
+after(() => db.close());
+await seedGazetteer(db, [
   { name: 'Охтирка', oblast: 'sumska', place: 'town', population: 47000, lat: 50.31, lon: 34.89 },
 ]);
-const extractor = createGroqExtractor(loadGazetteer(db));
+const extractor = createGroqExtractor(await loadGazetteer(db));
 
 const realFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = realFetch; });

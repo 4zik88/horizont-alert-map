@@ -321,3 +321,23 @@ GET /auth?t=<token>            magic link
 | messages | 30 days, matching the current retention job |
 | alerts | 90 days |
 | llm_cache | 30 days |
+
+## 6. As built (stage 3, 2026-10-02)
+
+The design above was implemented with these deliberate differences. The code is the
+reference; this section explains why it differs from the plan.
+
+| Area | Planned | Built | Why |
+|---|---|---|---|
+| Times | `timestamptz` | `bigint` epoch ms | The worker's queries ported unchanged; the wire uses ms too. |
+| Table names | `channels`, `users.telegram_user_id`, `lat/lng` | the SQLite names: `channel_state`, `users.chat_id`, `lat/lon` | Same reason; a port, not a rewrite. |
+| Packages | contract, parser, geo | plus `packages/db` | The schema, event log, map publishing and auth are shared by worker and API. |
+| Observation | position only | `kind`: position / destination / launch, plus `area` | "курсом на X" is not a position, and an oblast-only report is not a point. Only positions that are not areas are projected or timed. |
+| Track window | 60-minute path in a 3-hour snapshot | tracks seen in the hour before `at` | Three hours of grey tracks buried the live ones; the timeline reaches further back by `at`. |
+| Forecast | sent as a vector | computed in the browser from heading and the type's speed | One place owns the "approximate" logic, as planned; `speedKmh` is null where nothing may be projected. |
+| Events | `track.stale` | not sent | The client greys a track by age; no server timer is needed. |
+| Alert regions | alerts.in.ua uids | `oblast:<key>`, `raion:<oblast>:<raion>` | The keyless feed reports names, not uids; ids match the map's polygons. Kyiv city was added as its own polygon. |
+| Login | link only | link plus a typed code; GET shows a button, POST logs in | An installed iPhone app has its own cookie jar, and link previews would spend a GET-consumed token. |
+| Map access | allowlist | the bot's allowlist, enforced at login; sessions of removed users end at worker boot | The allowlist lives in the worker's environment. |
+| Fuzzy matching | Levenshtein ≤ 2 | ≤ 1, inside a known oblast only | Every distance-2 match on the corpus was a wrong place. |
+| LLM default | Haiku | Groq by default; Haiku when Anthropic is selected | Amended at approval. |

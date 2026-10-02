@@ -1,13 +1,14 @@
 import { openDb } from '../src/db/index.js';
+import { config } from '../src/config.js';
 import { loadGazetteer } from '../src/db/gazetteer.js';
 import { parseMessage } from '@horizont/parser';
 import { classifyType } from '@horizont/parser';
 
-const db = openDb(process.env['DB_PATH'] ?? './data/map.db');
-const gaz = loadGazetteer(db);
-const rows = db.prepare(
-  `SELECT text FROM messages WHERE is_sensitive = 0 AND text <> ''`,
-).all() as { text: string }[];
+const db = await openDb(config.DATABASE_URL);
+const gaz = await loadGazetteer(db);
+const { rows } = await db.query<{ text: string }>(
+  `SELECT text FROM messages WHERE is_sensitive = 0 AND text <> '' ORDER BY id`,
+);
 
 const TARGET = /бпла|шахед|герань|каб|ракет|реактивн|балістик|авіаці/iu;
 const CUE = /(?<![\p{L}\p{N}])(курс(?:ом)?\s+на|[ву]\s+напрямку|в\s+б[іi]к|повз|через|над|на)\s+/iu;
@@ -53,4 +54,4 @@ for (const [r, n] of [...reasons].sort((a, b) => b[1] - a[1])) {
 console.log('\n=== most frequent unresolved names ===');
 console.log([...unresolved].sort((a, b) => b[1] - a[1]).slice(0, 25)
   .map(([n, c]) => `${n}(${c})`).join('  '));
-db.close();
+await db.close();

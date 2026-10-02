@@ -22,7 +22,7 @@ const PAUSE_MS = 900;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function backfillChannel(repo: Repo, channel: string): Promise<void> {
-  repo.ensureChannel(channel);
+  await repo.ensureChannel(channel);
 
   let cursor: number | undefined;
   let total = 0;
@@ -39,12 +39,12 @@ async function backfillChannel(repo: Repo, channel: string): Promise<void> {
       break;
     }
 
-    const result = ingestMessages(repo, messages);
+    const result = await ingestMessages(repo, messages);
     total += result.inserted;
     const minId = result.minId as number;
     const maxId = result.maxId as number;
 
-    repo.markSuccess(channel, minId, maxId, Date.now());
+    await repo.markSuccess(channel, minId, maxId, Date.now());
     logger.info(
       { channel, page: page + 1, minId, maxId, inserted: result.inserted, total },
       'backfill page',
@@ -61,7 +61,7 @@ async function backfillChannel(repo: Repo, channel: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const db = openDb(config.DB_PATH);
+  const db = await openDb(config.DATABASE_URL);
   const repo = new Repo(db);
 
   try {
@@ -69,7 +69,7 @@ async function main(): Promise<void> {
       await backfillChannel(repo, channel.toLowerCase());
     }
   } finally {
-    closeDb(db);
+    await closeDb(db);
   }
 }
 

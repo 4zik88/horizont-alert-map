@@ -1,5 +1,6 @@
 {
   "name": "horizont",
+  "description": "Private air-target and air-raid alert warnings for Ukraine: a Telegram bot and a live PWA map, built from public sources.",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.28.0",
@@ -10,8 +11,11 @@
     "build": "pnpm -r --workspace-concurrency=1 build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
-    "dev": "tsx watch --conditions=source --env-file-if-exists=.env apps/worker/src/index.ts",
-    "start": "node apps/worker/dist/index.js",
+    "dev:worker": "tsx watch --conditions=source --env-file-if-exists=.env apps/worker/src/index.ts",
+    "dev:api": "tsx watch --conditions=source --env-file-if-exists=.env apps/api/src/index.ts",
+    "dev:web": "pnpm --filter @horizont/web dev",
+    "start:worker": "node apps/worker/dist/index.js",
+    "start:api": "node apps/api/dist/index.js",
     "backfill": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/backfill.ts",
     "fixtures:refresh": "tsx --conditions=source apps/worker/scripts/refresh-fixtures.ts",
     "build:toponyms": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/build-toponyms.ts",
@@ -19,7 +23,7 @@
     "coverage": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/parser-coverage.ts",
     "llm:check": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/llm-check.ts",
     "bot:check": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/bot-check.ts",
-    "backup": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/backup.ts",
+    "import:sqlite": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/import-sqlite.ts",
     "fuzzy:audit": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/fuzzy-audit.ts"
   },
   "devDependencies": {

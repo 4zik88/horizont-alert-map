@@ -29,60 +29,44 @@ export const MAX_RADIUS_KM = 200;
 
 export class Users {
   private readonly db: Db;
-  private readonly selectByChat;
-  private readonly upsert;
-  private readonly setLocation;
-  private readonly setRadius;
-  private readonly setActive;
-  private readonly selectNotifiable;
 
   constructor(db: Db) {
     this.db = db;
-
-    this.selectByChat = db.prepare(`SELECT * FROM users WHERE chat_id = ?`);
-
-    this.upsert = db.prepare(`
-      INSERT INTO users (chat_id, username, radius_km, is_active, created_at, updated_at)
-      VALUES (@chatId, @username, @radius, 1, @now, @now)
-      ON CONFLICT(chat_id) DO UPDATE SET
-        username = COALESCE(excluded.username, users.username),
-        is_active = 1,
-        updated_at = @now
-    `);
-
-    this.setLocation = db.prepare(`
-      UPDATE users
-         SET lat = @lat, lon = @lon, location_kind = @kind, oblast = @oblast,
-             raion = @raion, location_updated_at = @now, live_until = @liveUntil,
-             updated_at = @now
-       WHERE chat_id = @chatId
-    `);
-
-    this.setRadius = db.prepare(
-      `UPDATE users SET radius_km = @radius, updated_at = @now WHERE chat_id = @chatId`,
-    );
-
-    this.setActive = db.prepare(
-      `UPDATE users SET is_active = @active, updated_at = @now WHERE chat_id = @chatId`,
-    );
-
-    // Only users who can actually be placed on the map are notifiable.
-    this.selectNotifiable = db.prepare(`
-      SELECT * FROM users
-       WHERE is_active = 1 AND lat IS NOT NULL AND lon IS NOT NULL
-    `);
   }
 
-  get(chatId: number): UserRow | undefined {
-    return this.selectByChat.get(chatId) as UserRow | undefined;
+  async get(chatId: number): Promise<UserRow | undefined> {
+    const { rows } = await this.db.query<UserRow>(`SELECT * FROM users WHERE chat_id = $1`, [chatId]);
+    return rows[0];
   }
 
   /** Called on /start. Re-activates a user who had stopped, keeping their settings. */
-  register(chatId: number, username: string | undefined, now: number): void {
-    this.upsert.run({ chatId, username: username ?? null, radius: DEFAULT_RADIUS_KM, now });
+  async register(chatId: number, username: string | undefined, now: number): Promise<void> {
+    await this.db.query(
+      `INSERT INTO users (chat_id, username, radius_km, is_active, created_at, updated_at)
+       VALUES ($1, $2, $3, 1, $4, $4)
+       ON CONFLICT (chat_id) DO UPDATE SET
+         username = COALESCE(excluded.username, users.username),
+         is_active = 1,
+         updated_at = $4`,
+      [chatId, username ?? null, DEFAULT_RADIUS_KM, now],
+    );
   }
 
-  saveLocation(params: {
+  /**
+   * Make sure a row exists, without touching notifications. /map uses this: opening
+   * the map must not switch warnings back on for someone who sent /stop.
+   */
+  async ensureKnown(chatId: number, username: string | undefined, now: number): Promise<void> {
+    await this.db.query(
+      `INSERT INTO users (chat_id, username, radius_km, is_active, created_at, updated_at)
+       VALUES ($1, $2, $3, 1, $4, $4)
+       ON CONFLICT (chat_id) DO UPDATE SET
+         username = COALESCE(excluded.username, users.username)`,
+      [chatId, username ?? null, DEFAULT_RADIUS_KM, now],
+    );
+  }
+
+  async saveLocation(p: {
     chatId: number;
     lat: number;
     lon: number;
@@ -91,8 +75,15 @@ export class Users {
     raion: string | null;
     liveUntil: number | null;
     now: number;
-  }): void {
-    this.setLocation.run(params);
+  }): Promise<void> {
+    await this.db.query(
+      `UPDATE users
+          SET lat = $2, lon = $3, location_kind = $4, oblast = $5,
+              raion = $6, location_updated_at = $7, live_until = $8,
+              updated_at = $7
+        WHERE chat_id = $1`,
+      [p.chatId, p.lat, p.lon, p.kind, p.oblast, p.raion, p.now, p.liveUntil],
+    );
   }
 
   /**
@@ -104,66 +95,80 @@ export class Users {
    * every boot: it is one point-in-polygon per user with no raion, and a handful of
    * users.
    */
-  backfillRaions(locate: (lat: number, lon: number) => string | null, now: number): number {
-    const rows = this.db.prepare(
-      `SELECT chat_id, lat, lon FROM users WHERE raion IS NULL AND lat IS NOT NULL`,
-    ).all() as { chat_id: number; lat: number; lon: number }[];
+  async backfillRaions(locate: (lat: number, lon: number) => string | null, now: number): Promise<number> {
+    return this.db.transaction(async (tx) => {
+      const { rows } = await tx.query<{ chat_id: number; lat: number; lon: number }>(
+        `SELECT chat_id, lat, lon FROM users WHERE raion IS NULL AND lat IS NOT NULL`,
+      );
 
-    const update = this.db.prepare(
-      `UPDATE users SET raion = @raion, updated_at = @now WHERE chat_id = @chatId`,
-    );
-
-    let filled = 0;
-    this.db.transaction(() => {
+      let filled = 0;
       for (const row of rows) {
         const raion = locate(row.lat, row.lon);
         if (raion === null) continue;
-        update.run({ chatId: row.chat_id, raion, now });
+        await tx.query(
+          `UPDATE users SET raion = $2, updated_at = $3 WHERE chat_id = $1`,
+          [row.chat_id, raion, now],
+        );
         filled++;
       }
-    })();
-
-    return filled;
+      return filled;
+    });
   }
 
-  updateRadius(chatId: number, radiusKm: number, now: number): void {
-    this.setRadius.run({ chatId, radius: radiusKm, now });
+  async updateRadius(chatId: number, radiusKm: number, now: number): Promise<void> {
+    await this.db.query(
+      `UPDATE users SET radius_km = $2, updated_at = $3 WHERE chat_id = $1`,
+      [chatId, radiusKm, now],
+    );
   }
 
-  setStopped(chatId: number, now: number): void {
-    this.setActive.run({ chatId, active: 0, now });
+  async setStopped(chatId: number, now: number): Promise<void> {
+    await this.db.query(
+      `UPDATE users SET is_active = $2, updated_at = $3 WHERE chat_id = $1`,
+      [chatId, 0, now],
+    );
   }
 
-  notifiable(): UserRow[] {
-    return this.selectNotifiable.all() as UserRow[];
+  /** Only users who can actually be placed on the map are notifiable. */
+  async notifiable(): Promise<UserRow[]> {
+    // `id`: the order SQLite's table scan returned them in.
+    const { rows } = await this.db.query<UserRow>(
+      `SELECT * FROM users
+        WHERE is_active = 1 AND lat IS NOT NULL AND lon IS NOT NULL
+        ORDER BY id`,
+    );
+    return rows;
   }
 
-  transaction<T>(fn: () => T): T {
-    return this.db.transaction(fn)();
+  /** Run `fn` in one transaction, with a `Users` bound to it. */
+  transaction<T>(fn: (users: Users) => Promise<T>): Promise<T> {
+    return this.db.transaction((tx) => fn(new Users(tx)));
   }
 }
 
 /** Small durable key/value, used for the Telegram offset and the notifier cursor. */
 export class AppState {
-  private readonly get_;
-  private readonly set_;
+  private readonly db: Db;
 
   constructor(db: Db) {
-    this.get_ = db.prepare(`SELECT value FROM app_state WHERE key = ?`);
-    this.set_ = db.prepare(`
-      INSERT INTO app_state (key, value, updated_at) VALUES (@key, @value, @now)
-      ON CONFLICT(key) DO UPDATE SET value = @value, updated_at = @now
-    `);
+    this.db = db;
   }
 
-  getNumber(key: string, fallback: number): number {
-    const row = this.get_.get(key) as { value: string } | undefined;
-    if (!row) return fallback;
-    const parsed = Number.parseInt(row.value, 10);
+  async getNumber(key: string, fallback: number): Promise<number> {
+    const { rows } = await this.db.query<{ value: string }>(
+      `SELECT value FROM app_state WHERE key = $1`,
+      [key],
+    );
+    if (!rows[0]) return fallback;
+    const parsed = Number.parseInt(rows[0].value, 10);
     return Number.isFinite(parsed) ? parsed : fallback;
   }
 
-  setNumber(key: string, value: number, now: number): void {
-    this.set_.run({ key, value: String(value), now });
+  async setNumber(key: string, value: number, now: number): Promise<void> {
+    await this.db.query(
+      `INSERT INTO app_state (key, value, updated_at) VALUES ($1, $2, $3)
+       ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      [key, String(value), now],
+    );
   }
 }

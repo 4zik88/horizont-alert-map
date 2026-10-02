@@ -25,6 +25,12 @@ export interface ParsedTarget {
   fromLon: number | null;
   courseDeg: number | null;
   confidence: number;
+  /**
+   * The place is a whole region (an oblast, a sea), resolved to its centre — not a
+   * point. "на півночі Чернігівщини" put a marker on Chernihiv city with a forecast
+   * toward Kyiv. Consumers must not project, time or pinpoint such a target.
+   */
+  toArea?: boolean;
   /** Set only when the message states a clock time; otherwise the post time is used. */
   observedAt?: number;
   sourceLine: string;
@@ -696,6 +702,7 @@ function parseClause(line: string, context: ParseContext): ParsedTarget[] {
       toName: destination.place.name,
       toLat: destination.place.lat,
       toLon: destination.place.lon,
+      toArea: destination.place.kind === 'oblast',
       fromName: origin?.place.name ?? null,
       fromLat: origin?.place.lat ?? null,
       fromLon: origin?.place.lon ?? null,

@@ -5,7 +5,8 @@ import { Notifier, DEFAULT_NOTIFIER } from '../src/notify/notifier.js';
 import type { TelegramApi } from '../src/bot/api.js';
 import { escapeHtml, formatAlertBatch, type AlertLine } from '../src/bot/format.js';
 import { raionAt } from '@horizont/geo/node';
-import { memoryDb } from './helpers.js';
+import type { Db } from '../src/db/index.js';
+import { useTestDb } from './helpers.js';
 
 const NOW = 1_700_000_000_000;
 const OKHTYRKA = { lat: 50.31, lon: 34.89 };
@@ -23,8 +24,10 @@ function fakeApi() {
   return { api, sent, setFail: (v: boolean) => { fail = v; } };
 }
 
+const getDb = useTestDb();
+
 function setup() {
-  const db = memoryDb();
+  const db = getDb();
   const users = new Users(db);
   const state = new AppState(db);
   const { api, sent, setFail } = fakeApi();
@@ -32,31 +35,37 @@ function setup() {
   return { db, users, state, notifier, sent, setFail };
 }
 
-function addUser(users: Users, chatId: number, lat: number, lon: number, radiusKm = 40) {
-  users.register(chatId, `u${chatId}`, NOW);
-  users.saveLocation({
+async function addUser(users: Users, chatId: number, lat: number, lon: number, radiusKm = 40) {
+  await users.register(chatId, `u${chatId}`, NOW);
+  await users.saveLocation({
     chatId, lat, lon, kind: 'static', oblast: 'sumska', raion: 'охтирський',
     liveUntil: null, now: NOW,
   });
-  users.updateRadius(chatId, radiusKm, NOW);
+  await users.updateRadius(chatId, radiusKm, NOW);
 }
 
 let seq = 0;
-function addTarget(db: ReturnType<typeof memoryDb>, over: Record<string, unknown> = {}) {
-  db.prepare(`INSERT INTO messages (channel, message_id, posted_at, fetched_at, text, content_hash)
-              VALUES ('t', ?, ?, ?, 'x', ?)`).run(++seq, NOW, NOW, `h${seq}`);
-  const messageId = db.prepare('SELECT id FROM messages WHERE message_id = ?').get(seq) as { id: number };
+async function addTarget(db: Db, over: Record<string, unknown> = {}) {
+  ++seq;
+  const { rows: [messageId] } = await db.query<{ id: number }>(
+    `INSERT INTO messages (channel, message_id, posted_at, fetched_at, text, content_hash)
+     VALUES ('t', $1, $2, $3, 'x', $4) RETURNING id`,
+    [seq, NOW, NOW, `h${seq}`],
+  );
   const row = {
     type: 'uav', count: 1, to_name: 'Охтирка', to_lat: OKHTYRKA.lat, to_lon: OKHTYRKA.lon,
     from_lat: null, from_lon: null, course_deg: null, confidence: 0.95, observed_at: NOW - 60_000,
     ...over,
   };
-  db.prepare(`INSERT INTO targets
-      (message_id, seq, type, count, oblast, relation, to_name, to_lat, to_lon,
-       from_lat, from_lon, course_deg, confidence, source, observed_at, created_at)
-     VALUES (@mid, 0, @type, @count, 'sumska', 'towards', @to_name, @to_lat, @to_lon,
-       @from_lat, @from_lon, @course_deg, @confidence, 'rules', @observed_at, @now)`)
-    .run({ ...row, mid: messageId.id, now: NOW });
+  await db.query(
+    `INSERT INTO targets
+       (message_id, seq, type, count, oblast, relation, to_name, to_lat, to_lon,
+        from_lat, from_lon, course_deg, confidence, source, observed_at, created_at)
+     VALUES ($1, 0, $2, $3, 'sumska', 'towards', $4, $5, $6,
+       $7, $8, $9, $10, 'rules', $11, $12)`,
+    [messageId!.id, row.type, row.count, row.to_name, row.to_lat, row.to_lon,
+      row.from_lat, row.from_lon, row.course_deg, row.confidence, row.observed_at, NOW],
+  );
 }
 
 describe('Notifier', () => {
@@ -64,8 +73,8 @@ describe('Notifier', () => {
 
   test('warns a user whose radius covers the target', async () => {
     const { db, users, notifier, sent } = setup();
-    addUser(users, 100, 50.31, 34.6);
-    addTarget(db);
+    await addUser(users, 100, 50.31, 34.6);
+    await addTarget(db);
 
     const result = await notifier.runOnce(NOW);
 
@@ -78,8 +87,8 @@ describe('Notifier', () => {
 
   test('leaves a distant user alone', async () => {
     const { db, users, notifier, sent } = setup();
-    addUser(users, 100, 46.48, 30.72, 40); // Odesa
-    addTarget(db);
+    await addUser(users, 100, 46.48, 30.72, 40); // Odesa
+    await addTarget(db);
 
     await notifier.runOnce(NOW);
     assert.equal(sent.length, 0);
@@ -87,9 +96,9 @@ describe('Notifier', () => {
 
   test('does not notify a user who sent /stop', async () => {
     const { db, users, notifier, sent } = setup();
-    addUser(users, 100, 50.31, 34.6);
-    users.setStopped(100, NOW);
-    addTarget(db);
+    await addUser(users, 100, 50.31, 34.6);
+    await users.setStopped(100, NOW);
+    await addTarget(db);
 
     await notifier.runOnce(NOW);
     assert.equal(sent.length, 0);
@@ -97,8 +106,8 @@ describe('Notifier', () => {
 
   test('does not notify a user with no location', async () => {
     const { db, users, notifier, sent } = setup();
-    users.register(100, 'u', NOW);
-    addTarget(db);
+    await users.register(100, 'u', NOW);
+    await addTarget(db);
 
     await notifier.runOnce(NOW);
     assert.equal(sent.length, 0);
@@ -107,14 +116,14 @@ describe('Notifier', () => {
   // The spec's rule: at most one message about a given target per user per 5 minutes.
   test('does not repeat the same target inside the cooldown', async () => {
     const { db, users, state, notifier, sent } = setup();
-    addUser(users, 100, 50.31, 34.6);
-    addTarget(db);
+    await addUser(users, 100, 50.31, 34.6);
+    await addTarget(db);
 
     await notifier.runOnce(NOW);
     assert.equal(sent.length, 1);
 
     // Rewind the cursor so the same target is scanned again.
-    state.setNumber('notify_target_cursor', 0, NOW);
+    await state.setNumber('notify_target_cursor', 0, NOW);
     await notifier.runOnce(NOW + 60_000);
     assert.equal(sent.length, 1, 'still just the one message');
   });
@@ -127,15 +136,15 @@ describe('Notifier', () => {
    */
   test('a second report of the same thing is not a second warning', async () => {
     const { db, users, state, notifier, sent } = setup();
-    addUser(users, 100, 50.31, 34.6);
-    addTarget(db);
+    await addUser(users, 100, 50.31, 34.6);
+    await addTarget(db);
 
     await notifier.runOnce(NOW);
     assert.equal(sent.length, 1);
 
     // A different row, same drone over the same town — which is what the channels send.
-    addTarget(db);
-    state.setNumber('notify_target_cursor', 0, NOW);
+    await addTarget(db);
+    await state.setNumber('notify_target_cursor', 0, NOW);
     await notifier.runOnce(NOW + 2 * 60_000);
     assert.equal(sent.length, 1, 'a new row is not new information');
   });
@@ -147,33 +156,33 @@ describe('Notifier', () => {
    */
   test('an unchanged warning waits out the longer repeat window', async () => {
     const { db, users, state, notifier, sent } = setup();
-    addUser(users, 100, 50.31, 34.6);
-    addTarget(db);
+    await addUser(users, 100, 50.31, 34.6);
+    await addTarget(db);
 
     await notifier.runOnce(NOW);
     assert.equal(sent.length, 1);
 
-    state.setNumber('notify_target_cursor', 0, NOW);
+    await state.setNumber('notify_target_cursor', 0, NOW);
     await notifier.runOnce(NOW + 6 * 60_000);
     assert.equal(sent.length, 1, 'past the cooldown, but it says nothing new');
 
-    state.setNumber('notify_target_cursor', 0, NOW);
+    await state.setNumber('notify_target_cursor', 0, NOW);
     await notifier.runOnce(NOW + 21 * 60_000);
     assert.equal(sent.length, 2, 'still there after twenty minutes is worth saying again');
   });
 
   test('a warning that has moved closer is sent as soon as the cooldown allows', async () => {
     const { db, users, state, notifier, sent } = setup();
-    addUser(users, 100, 50.31, 34.6);
-    addTarget(db);
+    await addUser(users, 100, 50.31, 34.6);
+    await addTarget(db);
 
     await notifier.runOnce(NOW);
     assert.equal(sent.length, 1);
     const first = /~(\d+) км/.exec(sent[0]!.text)![1]!;
 
     // Same town, materially nearer: the reader needs to hear this one.
-    addTarget(db, { to_lat: 50.315, to_lon: 34.61 });
-    state.setNumber('notify_target_cursor', 0, NOW);
+    await addTarget(db, { to_lat: 50.315, to_lon: 34.61 });
+    await state.setNumber('notify_target_cursor', 0, NOW);
     await notifier.runOnce(NOW + 6 * 60_000);
 
     assert.equal(sent.length, 2, 'a real change is not held back');
@@ -184,10 +193,10 @@ describe('Notifier', () => {
   // for each is how an alerting bot gets muted.
   test('combines several targets into one message', async () => {
     const { db, users, notifier, sent } = setup();
-    addUser(users, 100, 50.31, 34.6);
-    addTarget(db, { to_name: 'Охтирка' });
-    addTarget(db, { to_name: 'Тростянець', to_lat: 50.48, to_lon: 34.96 });
-    addTarget(db, { to_name: 'Лебедин', to_lat: 50.58, to_lon: 34.49 });
+    await addUser(users, 100, 50.31, 34.6);
+    await addTarget(db, { to_name: 'Охтирка' });
+    await addTarget(db, { to_name: 'Тростянець', to_lat: 50.48, to_lon: 34.96 });
+    await addTarget(db, { to_name: 'Лебедин', to_lat: 50.58, to_lon: 34.49 });
 
     const result = await notifier.runOnce(NOW);
 
@@ -198,8 +207,8 @@ describe('Notifier', () => {
 
   test('advances its cursor so a restart does not re-warn', async () => {
     const { db, users, notifier, sent } = setup();
-    addUser(users, 100, 50.31, 34.6);
-    addTarget(db);
+    await addUser(users, 100, 50.31, 34.6);
+    await addTarget(db);
 
     await notifier.runOnce(NOW);
     await notifier.runOnce(NOW + 1000);
@@ -209,25 +218,25 @@ describe('Notifier', () => {
   // A failed send must be retried, not silently swallowed by the cooldown.
   test('does not record a notification that failed to send', async () => {
     const { db, users, state, notifier, sent, setFail } = setup();
-    addUser(users, 100, 50.31, 34.6);
-    addTarget(db);
+    await addUser(users, 100, 50.31, 34.6);
+    await addTarget(db);
 
     setFail(true);
     await notifier.runOnce(NOW);
     assert.equal(sent.length, 0);
 
     setFail(false);
-    state.setNumber('notify_target_cursor', 0, NOW);
+    await state.setNumber('notify_target_cursor', 0, NOW);
     await notifier.runOnce(NOW + 1000);
     assert.equal(sent.length, 1, 'retried after the failure');
   });
 
   test('warns several users independently', async () => {
     const { db, users, notifier, sent } = setup();
-    addUser(users, 100, 50.31, 34.6);
-    addUser(users, 200, 50.35, 34.8);
-    addUser(users, 300, 46.48, 30.72); // far away
-    addTarget(db);
+    await addUser(users, 100, 50.31, 34.6);
+    await addUser(users, 200, 50.35, 34.8);
+    await addUser(users, 300, 46.48, 30.72); // far away
+    await addTarget(db);
 
     await notifier.runOnce(NOW);
     assert.deepEqual(sent.map((s) => s.chatId).sort(), [100, 200]);
@@ -326,26 +335,26 @@ describe('formatAlertLine — HTML safety', () => {
  * people already relying on the bot are the last to get the fix.
  */
 describe('Users.backfillRaions', () => {
-  test('fills a raion for a user who already shared a location', () => {
+  test('fills a raion for a user who already shared a location', async () => {
     const { db, users } = setup();
-    addUser(users, 100, 49.716, 28.8318);
-    db.prepare('UPDATE users SET raion = NULL').run();
+    await addUser(users, 100, 49.716, 28.8318);
+    await db.query('UPDATE users SET raion = NULL');
 
-    const filled = users.backfillRaions(
+    const filled = await users.backfillRaions(
       (lat, lon) => raionAt(lat, lon)?.match ?? null,
       NOW,
     );
 
     assert.equal(filled, 1);
-    assert.equal(users.get(100)?.raion, 'хмільницький');
+    assert.equal((await users.get(100))?.raion, 'хмільницький');
   });
 
-  test('leaves a user outside every polygon alone rather than guessing', () => {
+  test('leaves a user outside every polygon alone rather than guessing', async () => {
     const { db, users } = setup();
-    addUser(users, 100, 50.4501, 30.5234); // Kyiv city: its own unit, no raion polygon
-    db.prepare('UPDATE users SET raion = NULL').run();
+    await addUser(users, 100, 50.4501, 30.5234); // Kyiv city: its own unit, no raion polygon
+    await db.query('UPDATE users SET raion = NULL');
 
-    assert.equal(users.backfillRaions((lat, lon) => raionAt(lat, lon)?.match ?? null, NOW), 0);
-    assert.equal(users.get(100)?.raion, null);
+    assert.equal(await users.backfillRaions((lat, lon) => raionAt(lat, lon)?.match ?? null, NOW), 0);
+    assert.equal((await users.get(100))?.raion, null);
   });
 });

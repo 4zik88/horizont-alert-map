@@ -4,17 +4,20 @@ import { Repo } from '../src/db/repo.js';
 import { ParseWorker, PARSER_VERSION } from '../src/parser/worker.js';
 import { DISABLED_EXTRACTOR, resolveObservedAt, type LlmExtractor } from '../src/parser/llm.js';
 import type { ParsedTarget } from '@horizont/parser';
-import { memoryDb, seedGazetteer } from './helpers.js';
+import type { Db } from '../src/db/index.js';
+import { scalar, seedGazetteer, useTestDb } from './helpers.js';
 import { loadGazetteer } from '../src/db/gazetteer.js';
 
-function setup(llm: LlmExtractor = DISABLED_EXTRACTOR) {
-  const db = memoryDb();
-  seedGazetteer(db, [
+const getDb = useTestDb();
+
+async function setup(llm: LlmExtractor = DISABLED_EXTRACTOR) {
+  const db = getDb();
+  await seedGazetteer(db, [
     { name: 'Охтирка', oblast: 'sumska', place: 'town', population: 47000, lat: 50.31, lon: 34.89 },
     { name: 'Ніжин', oblast: 'chernihivska', place: 'city', population: 70000, lat: 51.05, lon: 31.88 },
   ]);
   const repo = new Repo(db);
-  const worker = new ParseWorker(loadGazetteer(db), repo, llm, {
+  const worker = new ParseWorker(await loadGazetteer(db), repo, llm, {
     batchSize: 50,
     intervalMs: 60_000,
     llmBudgetPerBatch: 10,
@@ -23,34 +26,34 @@ function setup(llm: LlmExtractor = DISABLED_EXTRACTOR) {
 }
 
 let nextId = 1;
-function addMessage(
-  db: ReturnType<typeof memoryDb>,
+async function addMessage(
+  db: Db,
   text: string,
   opts: { sensitive?: boolean; hash?: string; postedAt?: number } = {},
-): number {
+): Promise<number> {
   const id = nextId++;
   const posted = opts.postedAt ?? 1000;
-  db.prepare(`
+  await db.query(`
     INSERT INTO messages (channel, message_id, posted_at, fetched_at, text, content_hash, is_sensitive)
-    VALUES ('t', ?, ?, ?, ?, ?, ?)
-  `).run(id, posted, posted, text, opts.hash ?? `h${id}`, opts.sensitive ? 1 : 0);
+    VALUES ('t', $1, $2, $3, $4, $5, $6)
+  `, [id, posted, posted, text, opts.hash ?? `h${id}`, opts.sensitive ? 1 : 0]);
   return id;
 }
 
-const targetsFor = (db: ReturnType<typeof memoryDb>) =>
-  db.prepare('SELECT * FROM targets ORDER BY message_id, seq').all() as Record<string, never>[];
-const stateOf = (db: ReturnType<typeof memoryDb>, messageId: number) =>
-  (db.prepare('SELECT parse_state FROM messages WHERE message_id = ?').get(messageId) as { parse_state: string }).parse_state;
+const targetsFor = async (db: Db) =>
+  (await db.query<Record<string, never>>('SELECT * FROM targets ORDER BY message_id, seq')).rows;
+const stateOf = async (db: Db, messageId: number) =>
+  scalar<string>(db, 'SELECT parse_state FROM messages WHERE message_id = $1', [messageId]);
 
 describe('ParseWorker', () => {
   test('parses pending messages into targets', async () => {
-    const { db, worker } = setup();
-    addMessage(db, 'Сумщина:\nБпЛА курсом на Охтирку');
+    const { db, worker } = await setup();
+    await addMessage(db, 'Сумщина:\nБпЛА курсом на Охтирку');
 
     const result = await worker.runBatch();
 
     assert.equal(result.parsed, 1);
-    const rows = targetsFor(db);
+    const rows = await targetsFor(db);
     assert.equal(rows.length, 1);
     assert.equal(rows[0]!['to_name'], 'Охтирка');
     assert.equal(rows[0]!['source'], 'rules');
@@ -58,47 +61,49 @@ describe('ParseWorker', () => {
   });
 
   test('never parses sensitive messages into targets', async () => {
-    const { db, worker } = setup();
-    const id = addMessage(db, 'Збито 10 БпЛА, зафіксовано влучання на Охтирку', { sensitive: true });
+    const { db, worker } = await setup();
+    const id = await addMessage(db, 'Збито 10 БпЛА, зафіксовано влучання на Охтирку', { sensitive: true });
 
     await worker.runBatch();
 
-    assert.equal(targetsFor(db).length, 0, 'impact reports must never become map targets');
-    assert.equal(stateOf(db, id), 'skipped');
+    assert.equal((await targetsFor(db)).length, 0, 'impact reports must never become map targets');
+    assert.equal(await stateOf(db, id), 'skipped');
   });
 
   test('marks unresolvable text unparsed with no targets', async () => {
-    const { db, worker } = setup();
-    const id = addMessage(db, 'Доброго вечора, ми з України');
+    const { db, worker } = await setup();
+    const id = await addMessage(db, 'Доброго вечора, ми з України');
 
     await worker.runBatch();
 
-    assert.equal(targetsFor(db).length, 0);
-    assert.equal(stateOf(db, id), 'unparsed', 'it goes to the feed as plain text');
+    assert.equal((await targetsFor(db)).length, 0);
+    assert.equal(await stateOf(db, id), 'unparsed', 'it goes to the feed as plain text');
   });
 
   test('is idempotent — re-parsing replaces targets instead of duplicating', async () => {
-    const { db, repo, worker } = setup();
-    addMessage(db, 'Сумщина:\nБпЛА курсом на Охтирку');
+    const { db, repo, worker } = await setup();
+    await addMessage(db, 'Сумщина:\nБпЛА курсом на Охтирку');
     await worker.runBatch();
-    assert.equal(targetsFor(db).length, 1);
+    assert.equal((await targetsFor(db)).length, 1);
 
     // An edit requeues the message; step 1's ingest does exactly this.
-    db.prepare(`UPDATE messages SET parse_state='pending', text='БпЛА курсом на Ніжин'`).run();
+    await db.query(`UPDATE messages SET parse_state='pending', text='БпЛА курсом на Ніжин'`);
     await worker.runBatch();
 
-    const rows = targetsFor(db);
+    const rows = await targetsFor(db);
     assert.equal(rows.length, 1, 'the old target must be gone, not accumulated');
     assert.equal(rows[0]!['to_name'], 'Ніжин');
     void repo;
   });
 
   test('records the parser version so the archive can be requeued later', async () => {
-    const { db, worker } = setup();
-    const id = addMessage(db, 'БпЛА курсом на Охтирку');
+    const { db, worker } = await setup();
+    const id = await addMessage(db, 'БпЛА курсом на Охтирку');
     await worker.runBatch();
-    const row = db.prepare('SELECT parser_version FROM messages WHERE message_id = ?').get(id) as { parser_version: number };
-    assert.equal(row.parser_version, PARSER_VERSION);
+    assert.equal(
+      await scalar(db, 'SELECT parser_version FROM messages WHERE message_id = $1', [id]),
+      PARSER_VERSION,
+    );
   });
 
   test('falls back to Claude only when the rules find nothing, and respects the budget', async () => {
@@ -114,19 +119,19 @@ describe('ParseWorker', () => {
         }];
       },
     };
-    const { db, worker } = setup(stub);
+    const { db, worker } = await setup(stub);
 
-    addMessage(db, 'Сумщина:\nБпЛА курсом на Охтирку');       // rules succeed
+    await addMessage(db, 'Сумщина:\nБпЛА курсом на Охтирку');       // rules succeed
     // Mentions a target but names no place after any cue the rules know, so they find
     // nothing while it still clearly reads as a report — exactly the LLM's job.
-    addMessage(db, 'Повідомляють про бпла, точне місце поки невідоме');
-    addMessage(db, 'Всім гарного дня');                        // not a report at all
+    await addMessage(db, 'Повідомляють про бпла, точне місце поки невідоме');
+    await addMessage(db, 'Всім гарного дня');                        // not a report at all
 
     const result = await worker.runBatch();
 
     assert.equal(calls, 1, 'Claude is called only for the message the rules could not resolve');
     assert.equal(result.llmCalls, 1);
-    const llmRows = targetsFor(db).filter((r) => r['source'] === 'llm');
+    const llmRows = (await targetsFor(db)).filter((r) => r['source'] === 'llm');
     assert.equal(llmRows.length, 1);
   });
 
@@ -136,13 +141,74 @@ describe('ParseWorker', () => {
         throw new Error('network down');
       },
     };
-    const { db, worker } = setup(throwing);
-    addMessage(db, 'БпЛА курсом на Охтирку');
-    addMessage(db, 'незрозумілий текст про бпла кудись');
+    const { db, worker } = await setup(throwing);
+    await addMessage(db, 'БпЛА курсом на Охтирку');
+    await addMessage(db, 'незрозумілий текст про бпла кудись');
 
     // Must not reject: ingestion continues even when enrichment fails.
     const result = await worker.runBatch();
     assert.equal(result.parsed, 1);
+  });
+});
+
+/*
+ * Map publishing hooks onto saveTargets: it must hand back the ids it created, in the
+ * order the parser produced the targets, and a re-parse must replace rather than add.
+ */
+describe('Repo.saveTargets', () => {
+  const target = (toName: string, observedAt: number) => ({
+    messageId: 0, type: 'uav', rawType: null, count: 1, oblast: 'sumska', relation: 'towards',
+    fromName: null, fromLat: null, fromLon: null, toName, toLat: 50.31, toLon: 34.89,
+    courseDeg: null, confidence: 0.9, source: 'rules', observedAt, createdAt: observedAt,
+  });
+
+  test('returns the new target ids in seq order and replaces on re-save', async () => {
+    const { db, repo } = await setup();
+    const messageId = await addMessage(db, 'x');
+    const id = await scalar(db, 'SELECT id FROM messages WHERE message_id = $1', [messageId]);
+    const rows = ['Охтирка', 'Ніжин', 'Суми'].map((n, i) => ({ ...target(n, 1000 + i), messageId: id }));
+
+    const first = await repo.saveTargets(id, rows, 'parsed', 2000, PARSER_VERSION);
+    const stored = (await db.query<{ id: number; seq: number; to_name: string }>(
+      'SELECT id, seq, to_name FROM targets ORDER BY seq',
+    )).rows;
+    assert.deepEqual(first, stored.map((r) => r.id));
+    assert.deepEqual(stored.map((r) => r.to_name), ['Охтирка', 'Ніжин', 'Суми']);
+
+    const second = await repo.saveTargets(id, rows.slice(0, 2), 'parsed', 3000, PARSER_VERSION);
+    assert.equal(second.length, 2);
+    assert.ok(second.every((n) => !first.includes(n)), 'a re-save creates new rows');
+    assert.deepEqual(
+      (await db.query<{ id: number }>('SELECT id FROM targets ORDER BY seq')).rows.map((r) => r.id),
+      second,
+    );
+    assert.equal(await stateOf(db, messageId), 'parsed');
+  });
+
+  test('an empty save clears the targets and returns no ids', async () => {
+    const { db, repo } = await setup();
+    const messageId = await addMessage(db, 'x');
+    const id = await scalar(db, 'SELECT id FROM messages WHERE message_id = $1', [messageId]);
+    await repo.saveTargets(id, [{ ...target('Охтирка', 1000), messageId: id }], 'parsed', 2000, 1);
+
+    assert.deepEqual(await repo.saveTargets(id, [], 'unparsed', 3000, 1), []);
+    assert.equal((await targetsFor(db)).length, 0);
+    assert.equal(await stateOf(db, messageId), 'unparsed');
+  });
+
+  test('a failure rolls the whole replacement back', async () => {
+    const { db, repo } = await setup();
+    const messageId = await addMessage(db, 'x');
+    const id = await scalar(db, 'SELECT id FROM messages WHERE message_id = $1', [messageId]);
+    await repo.saveTargets(id, [{ ...target('Охтирка', 1000), messageId: id }], 'parsed', 2000, 1);
+
+    // The second row violates NOT NULL on `type`, after the delete and the first insert.
+    const bad = [{ ...target('Ніжин', 1000), messageId: id }, { ...target('Суми', 1000), messageId: id, type: null as unknown as string }];
+    await assert.rejects(repo.saveTargets(id, bad, 'parsed', 3000, 2));
+
+    const rows = await targetsFor(db);
+    assert.deepEqual(rows.map((r) => r['to_name']), ['Охтирка'], 'the old targets are still there');
+    assert.equal(await scalar(db, 'SELECT parser_version FROM messages WHERE id = $1', [id]), 1);
   });
 });
 
@@ -198,14 +264,14 @@ describe('LLM budget and cache', () => {
 
   test('the same text never pays twice, and the cached time follows the new post', async () => {
     const fake = countingLlm(okhtyrka);
-    const { db, worker } = setup(fake.llm);
-    addMessage(db, UNRESOLVED, { hash: 'same', postedAt: 10_000_000 });
+    const { db, worker } = await setup(fake.llm);
+    await addMessage(db, UNRESOLVED, { hash: 'same', postedAt: 10_000_000 });
     await worker.runBatch();
-    addMessage(db, UNRESOLVED, { hash: 'same', postedAt: 20_000_000 });
+    await addMessage(db, UNRESOLVED, { hash: 'same', postedAt: 20_000_000 });
     await worker.runBatch();
 
     assert.equal(fake.calls(), 1);
-    const rows = targetsFor(db);
+    const rows = await targetsFor(db);
     assert.equal(rows.length, 2);
     assert.deepEqual(rows.map((r) => r['observed_at']), [10_000_000 - 60_000, 20_000_000 - 60_000]);
     assert.ok(rows.every((r) => r['source'] === 'llm'));
@@ -213,12 +279,14 @@ describe('LLM budget and cache', () => {
 
   test('an edited message does not buy a second call', async () => {
     const fake = countingLlm(okhtyrka);
-    const { db, worker } = setup(fake.llm);
-    const id = addMessage(db, UNRESOLVED, { hash: 'v1' });
+    const { db, worker } = await setup(fake.llm);
+    const id = await addMessage(db, UNRESOLVED, { hash: 'v1' });
     await worker.runBatch();
 
-    db.prepare(`UPDATE messages SET text = ?, content_hash = 'v2', parse_state = 'pending' WHERE message_id = ?`)
-      .run(UNRESOLVED + ' знову', id);
+    await db.query(
+      `UPDATE messages SET text = $1, content_hash = 'v2', parse_state = 'pending' WHERE message_id = $2`,
+      [UNRESOLVED + ' знову', id],
+    );
     await worker.runBatch();
 
     assert.equal(fake.calls(), 1);
@@ -227,28 +295,28 @@ describe('LLM budget and cache', () => {
   test('a failed call is neither cached nor counted as the message\'s call', async () => {
     let fail = true;
     const fake = countingLlm(() => (fail ? null : okhtyrka()));
-    const { db, worker } = setup(fake.llm);
-    const id = addMessage(db, UNRESOLVED, { hash: 'x' });
+    const { db, worker } = await setup(fake.llm);
+    const id = await addMessage(db, UNRESOLVED, { hash: 'x' });
     await worker.runBatch();
 
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM llm_cache').get()!['n' as never], 0);
+    assert.equal(await scalar(db, 'SELECT COUNT(*) AS n FROM llm_cache'), 0);
     assert.equal(
-      (db.prepare('SELECT llm_called_at FROM messages WHERE message_id = ?').get(id) as { llm_called_at: number | null }).llm_called_at,
+      await scalar<number | null>(db, 'SELECT llm_called_at FROM messages WHERE message_id = $1', [id]),
       null,
     );
 
     fail = false;
-    db.prepare(`UPDATE messages SET parse_state = 'pending' WHERE message_id = ?`).run(id);
+    await db.query(`UPDATE messages SET parse_state = 'pending' WHERE message_id = $1`, [id]);
     await worker.runBatch();
     assert.equal(fake.calls(), 2);
-    assert.equal(targetsFor(db).length, 1);
+    assert.equal((await targetsFor(db)).length, 1);
   });
 
   test('an empty answer is an answer, and is cached', async () => {
     const fake = countingLlm(() => []);
-    const { db, worker } = setup(fake.llm);
-    addMessage(db, UNRESOLVED, { hash: 'empty' });
-    addMessage(db, UNRESOLVED, { hash: 'empty' });
+    const { db, worker } = await setup(fake.llm);
+    await addMessage(db, UNRESOLVED, { hash: 'empty' });
+    await addMessage(db, UNRESOLVED, { hash: 'empty' });
     await worker.runBatch();
 
     assert.equal(fake.calls(), 1);

@@ -3,7 +3,7 @@ import { config } from './config.js';
 
 /**
  * Paths scrubbed from every log record. User coordinates and Telegram identities are
- * the hard constraint: they live in SQLite and nowhere else. Wiring this up in step 1
+ * the hard constraint: they live in the database and nowhere else. Wiring this up in step 1
  * — before any user row exists — means a stray `log.info({ user })` in step 3 cannot
  * leak them.
  *

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="uk" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0e1116" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Тривоги" />
+    <title>Карта тривог і повітряних цілей України</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/icon-180.png" />
+  </head>
+  <body>
+    <div id="app" hidden>
+      <header class="bar">
+        <div class="bar-row">
+          <h1 class="title" title="Карта тривог і повітряних цілей України">Тривоги і цілі</h1>
+          <div class="pills">
+            <span id="conn" class="pill" role="status" aria-live="polite"></span>
+            <span id="updated" class="pill"></span>
+            <button id="sources" class="pill pill-btn" type="button"></button>
+          </div>
+        </div>
+        <div class="bar-row tools">
+          <button id="btn-oblast" class="tool" type="button" aria-pressed="false">Тільки моя область</button>
+          <button id="btn-locate" class="tool" type="button" aria-pressed="false">Де я</button>
+        </div>
+      </header>
+      <div id="history-banner" class="banner banner-history" hidden>
+        <span id="history-text"></span>
+        <button id="btn-live-banner" type="button" class="banner-btn">Зараз</button>
+      </div>
+      <div id="offline-banner" class="banner banner-offline" hidden></div>
+      <main id="map" aria-label="Карта"></main>
+      <section id="near" class="near" hidden aria-label="Поруч з вами">
+        <div class="near-head">
+          <span>Поруч з вами · 40 км</span>
+          <span class="near-note">місце лише на цьому пристрої</span>
+        </div>
+        <ul id="near-list"></ul>
+      </section>
+      <footer class="foot">
+        <div class="timeline">
+          <input id="slider" type="range" min="0" max="180" step="1" value="180" aria-label="Час, останні 3 години" />
+          <span id="slider-label" class="slider-label">зараз</span>
+          <button id="btn-live" class="tool live" type="button" aria-pressed="true">Зараз</button>
+        </div>
+        <div class="disclaimer">
+          <span id="disclaimer"></span>
+          <button id="btn-logout" class="linkish" type="button" hidden>Вийти</button>
+        </div>
+      </footer>
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    </div>
+
+    <div id="login" class="login" hidden>
+      <div class="login-card">
+        <h1>Карта тривог і повітряних цілей</h1>
+        <p>Відкрийте бота і надішліть <b>/start</b>, щоб отримати посилання для входу.</p>
+        <form id="login-form" autocomplete="off" novalidate>
+          <label for="login-code">Або введіть код із бота</label>
+          <div class="login-row">
+            <input id="login-code" name="code" inputmode="text" autocapitalize="characters" autocomplete="one-time-code"
+              spellcheck="false" maxlength="12" placeholder="ABCD-EFGH" required />
+            <button type="submit" id="login-submit">Увійти</button>
+          </div>
+          <p id="login-error" class="login-error" role="alert" hidden></p>
+        </form>
+        <p class="login-note" id="login-disclaimer"></p>
+      </div>
+    </div>
+
+    <div id="boot" class="boot">Завантаження…</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

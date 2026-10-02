@@ -21,31 +21,29 @@ export interface ServerOptions {
  */
 export function startServer(repo: Repo, opts: ServerOptions): Server {
   const server = createServer((req, res) => {
-    try {
-      handle(req, res, repo, opts);
-    } catch (error) {
+    handle(req, res, repo, opts).catch((error: unknown) => {
       logger.warn(
         { err: error instanceof Error ? error.message : String(error) },
         'request failed',
       );
       if (!res.headersSent) res.writeHead(500).end();
-    }
+    });
   });
 
   server.listen(opts.port, () => logger.info({ port: opts.port }, 'http listening'));
   return server;
 }
 
-function handle(
+async function handle(
   req: IncomingMessage,
   res: ServerResponse,
   repo: Repo,
   opts: ServerOptions,
-): void {
+): Promise<void> {
   const path = new URL(req.url ?? '/', 'http://localhost').pathname;
 
   if ((req.method === 'GET' || req.method === 'HEAD') && path === '/healthz') {
-    const health = checkHealth(repo, opts.pollIntervalMs);
+    const health = await checkHealth(repo, opts.pollIntervalMs);
     res.writeHead(health.ok ? 200 : 503, {
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
@@ -63,11 +61,11 @@ function handle(
  * Unhealthy when any enabled channel has not succeeded within five poll intervals, so
  * a silently dead poller is restarted rather than left looking alive.
  */
-export function checkHealth(repo: Repo, pollIntervalMs: number) {
+export async function checkHealth(repo: Repo, pollIntervalMs: number) {
   const staleAfter = pollIntervalMs * 5;
   const now = Date.now();
 
-  const channels = repo.listChannels()
+  const channels = (await repo.listChannels())
     .filter((c) => c.enabled === 1)
     .map((c) => ({
       channel: c.channel,

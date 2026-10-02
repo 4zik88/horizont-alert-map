@@ -9,13 +9,12 @@
  * User coordinates are never printed — only oblast and radius — because this output
  * is the kind of thing that gets pasted into a chat.
  */
-import Database from 'better-sqlite3';
 import { config, redactedConfig } from '../src/config.js';
 import { allowedChatIds, allowedUsernames } from '../src/bot/access.js';
 import { TelegramApi } from '../src/bot/api.js';
 import { formatAlertBatch, type AlertLine } from '../src/bot/format.js';
 import { Users } from '../src/db/users.js';
-import { MIGRATIONS } from '../src/db/migrations.js';
+import { MIGRATIONS, connect, type Sql } from '@horizont/db';
 import { raionName } from '@horizont/geo/node';
 import { oblastByKey } from '@horizont/parser';
 import type { TargetType } from '@horizont/parser';
@@ -48,23 +47,37 @@ async function main(): Promise<void> {
     return;
   }
 
-  const db = new Database(config.DB_PATH, { readonly: true });
+  // Connected without migrating: this check writes nothing.
+  const db = connect(config.DATABASE_URL);
+  try {
+    await report(db);
+  } finally {
+    await db.close();
+  }
+}
 
+async function report(db: Sql): Promise<void> {
   /*
-   * Opened read-only, so this cannot migrate — and `Users` prepares its statements
-   * eagerly, so an out-of-date database failed here with a bare "no such column"
-   * instead of saying what was wrong. Check the version and say it plainly.
+   * This does not migrate, so an out-of-date database would fail below with a bare
+   * "column does not exist" instead of saying what was wrong. Check the version and
+   * say it plainly.
    */
-  const version = db.pragma('user_version', { simple: true }) as number;
+  const { rows: [tracked] } = await db.query<{ exists: boolean }>(
+    `SELECT to_regclass('schema_migrations') IS NOT NULL AS exists`,
+  );
+  const version = tracked?.exists
+    ? (await db.query<{ v: number }>('SELECT COALESCE(MAX(version), 0) AS v FROM schema_migrations'))
+      .rows[0]!.v
+    : 0;
   const latest = MIGRATIONS.at(-1)!.version;
   if (version < latest) {
-    console.log(`\n!! ${config.DB_PATH} is at schema version ${version}, needs ${latest}.`);
-    console.log('   Start the service once (npm run dev) to migrate it, then run this again.');
+    console.log(`\n!! the database is at schema version ${version}, needs ${latest}.`);
+    console.log('   Start the service once (pnpm dev) to migrate it, then run this again.');
     return;
   }
 
   const users = new Users(db);
-  const registered = users.notifiable();
+  const registered = await users.notifiable();
 
   console.log(`\nregistered users with a location: ${registered.length}`);
   for (const user of registered) {
@@ -89,11 +102,11 @@ async function main(): Promise<void> {
     course_deg: number | null; confidence: number; observed_at: number;
   }
 
-  const rows = db.prepare(`
+  const { rows } = await db.query<TargetRow>(`
     SELECT id, type, count, to_name, to_lat, to_lon, from_lat, from_lon,
            course_deg, confidence, observed_at
-      FROM targets ORDER BY observed_at DESC LIMIT 400
-  `).all() as TargetRow[];
+      FROM targets ORDER BY observed_at DESC, id LIMIT 400
+  `);
 
   const targets = rows.map((r) => ({
     count: r.count,
