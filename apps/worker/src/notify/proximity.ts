@@ -1,15 +1,20 @@
-import { distanceKm } from '@horizont/geo';
+import { FORECAST_SPEED_KMH } from '@horizont/contract';
+import { approach, distanceKm } from '@horizont/geo';
 import { TYPE_SPEED_KMH, type TargetType } from '@horizont/parser';
 
 /**
  * Decides whether a target concerns a given user.
  *
  * This is what makes someone's phone buzz at 03:00, so it is pure and heavily
- * tested. Two independent reasons to warn, per the spec:
+ * tested. Three reasons to warn:
  *
- *  1. The target is inside the user's radius.
- *  2. The target's course points at the user — worth knowing *before* it arrives,
- *     which is the whole value of the tool.
+ *  1. The target, or the town it is heading for, is inside the user's radius.
+ *  2. A reported position with a heading projects to pass within the radius soon —
+ *     the brief's rule: closest approach within 40 km, arrival within 30 minutes. It
+ *     is computed exactly as the map computes "time to reach you", so the two never
+ *     disagree about what is coming.
+ *  3. The target's course from a named origin points at the user (a corridor) —
+ *     worth knowing *before* it arrives, which is the whole value of the tool.
  *
  * False alarms are the real risk: for a group of ten people, a bot that cries wolf
  * gets muted, and then it is worse than useless. Hence the confidence floor, the
@@ -27,6 +32,10 @@ export interface TargetView {
   courseDeg: number | null;
   confidence: number;
   observedAt: number;
+  /** over | past | through report where the target is; towards names a destination. */
+  relation: string | null;
+  /** The named place is a whole region: never projected, never timed. */
+  toArea: boolean;
 }
 
 export interface UserView {
@@ -45,6 +54,8 @@ export interface ProximityOptions {
   courseToleranceDeg: number;
   /** How far ahead along the course to look, as minutes of flight for that type. */
   leadMinutes: number;
+  /** Rule 2: only a projected arrival this soon is worth a warning. */
+  maxEtaMin: number;
   now: number;
 }
 
@@ -53,9 +64,10 @@ export const DEFAULT_PROXIMITY: Omit<ProximityOptions, 'now'> = {
   maxAgeMs: 30 * 60_000,
   courseToleranceDeg: 30,
   leadMinutes: 25,
+  maxEtaMin: 30,
 };
 
-export type MatchReason = 'in_radius' | 'heading_towards';
+export type MatchReason = 'in_radius' | 'approaching' | 'heading_towards';
 
 export interface Match {
   reason: MatchReason;
@@ -76,7 +88,11 @@ export interface Match {
    * would be a number with no meaning.
    */
   etaMin: number | null;
+  /** Rule 2 only: how close the projected path passes to the user, km. */
+  closestKm?: number;
 }
+
+const POSITION_RELATIONS = new Set(['over', 'past', 'through']);
 
 /** Smallest absolute angle between two bearings, 0-180. */
 export function angleDelta(a: number, b: number): number {
@@ -102,6 +118,8 @@ export function matchTarget(
 ): Match | undefined {
   if (target.confidence < opts.minConfidence) return undefined;
   if (opts.now - target.observedAt > opts.maxAgeMs) return undefined;
+  // "somewhere in Chernihiv oblast" is not a point anyone is near or far from.
+  if (target.toArea) return undefined;
 
   const position = positionOf(target);
   if (!position) return undefined;
@@ -128,6 +146,23 @@ export function matchTarget(
   if (nearest <= user.radiusKm) {
     // Already here. A time-to-reach would be a rounding artefact, not information.
     return { reason: 'in_radius', distanceKm: named, targetKm, etaMin: null };
+  }
+
+  // Projected approach from a reported position, the map's own computation.
+  const projectSpeed = FORECAST_SPEED_KMH[target.type];
+  if (
+    POSITION_RELATIONS.has(target.relation ?? '') &&
+    target.courseDeg !== null && projectSpeed !== null &&
+    target.toLat !== null && target.toLon !== null
+  ) {
+    const a = approach(
+      { lat: target.toLat, lon: target.toLon, headingDeg: target.courseDeg, speedKmh: projectSpeed, observedAt: target.observedAt },
+      { lat: user.lat, lon: user.lon },
+      opts.now,
+    );
+    if (a && a.closestKm <= user.radiusKm && a.etaMin <= opts.maxEtaMin) {
+      return { reason: 'approaching', distanceKm: named, targetKm, etaMin: a.etaMin, closestKm: a.closestKm };
+    }
   }
 
   // Course corridor. Only meaningful with a known heading and a known origin —

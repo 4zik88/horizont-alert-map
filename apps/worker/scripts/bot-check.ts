@@ -100,11 +100,12 @@ async function report(db: Sql): Promise<void> {
     to_name: string | null; to_lat: number | null; to_lon: number | null;
     from_lat: number | null; from_lon: number | null;
     course_deg: number | null; confidence: number; observed_at: number;
+    relation: string | null; to_area: number;
   }
 
   const { rows } = await db.query<TargetRow>(`
     SELECT id, type, count, to_name, to_lat, to_lon, from_lat, from_lon,
-           course_deg, confidence, observed_at
+           course_deg, confidence, observed_at, relation, to_area
       FROM targets ORDER BY observed_at DESC, id LIMIT 400
   `);
 
@@ -114,6 +115,7 @@ async function report(db: Sql): Promise<void> {
       id: r.id, type: r.type as TargetType, toName: r.to_name,
       toLat: r.to_lat, toLon: r.to_lon, fromLat: r.from_lat, fromLon: r.from_lon,
       courseDeg: r.course_deg, confidence: r.confidence, observedAt: r.observed_at,
+      relation: r.relation, toArea: r.to_area === 1,
     } satisfies TargetView,
   }));
 

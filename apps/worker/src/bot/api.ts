@@ -93,7 +93,11 @@ export class TelegramApi {
  * A user who blocked the bot returns 403 forever; that must not stop the other nine
  * people from being warned.
  */
-export async function trySend(api: TelegramApi, chatId: number, text: string): Promise<boolean> {
+export async function trySend(
+  api: { sendMessage(chatId: number, text: string): Promise<void> },
+  chatId: number,
+  text: string,
+): Promise<boolean> {
   try {
     await api.sendMessage(chatId, text);
     return true;

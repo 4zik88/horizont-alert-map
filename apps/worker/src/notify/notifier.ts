@@ -2,7 +2,8 @@ import type { Db } from '../db/index.js';
 import { AppState, Users } from '../db/users.js';
 import { logger } from '../logger.js';
 import type { TargetType } from '@horizont/parser';
-import { TelegramApi, trySend } from '../bot/api.js';
+import { trySend } from '../bot/api.js';
+import type { MessageSink } from './delivery.js';
 import { formatAlertBatch, subjectOf, type AlertLine } from '../bot/format.js';
 import {
   DEFAULT_PROXIMITY,
@@ -53,6 +54,8 @@ interface TargetRow {
   course_deg: number | null;
   confidence: number;
   observed_at: number;
+  relation: string | null;
+  to_area: number;
 }
 
 /**
@@ -67,13 +70,13 @@ export class Notifier {
   private readonly db: Db;
   private readonly users: Users;
   private readonly state: AppState;
-  private readonly api: TelegramApi;
+  private readonly api: MessageSink;
   private readonly opts: NotifierOptions;
   private timer: NodeJS.Timeout | undefined;
   private stopping = false;
   private running = false;
 
-  constructor(db: Db, users: Users, state: AppState, api: TelegramApi, opts: NotifierOptions) {
+  constructor(db: Db, users: Users, state: AppState, api: MessageSink, opts: NotifierOptions) {
     this.db = db;
     this.users = users;
     this.state = state;
@@ -119,7 +122,7 @@ export class Notifier {
       const cursor = await this.state.getNumber(CURSOR_KEY, 0);
       const { rows: targets } = await this.db.query<TargetRow>(
         `SELECT id, type, count, to_name, to_lat, to_lon, from_lat, from_lon,
-                course_deg, confidence, observed_at
+                course_deg, confidence, observed_at, relation, to_area
            FROM targets
           WHERE id > $1
           ORDER BY id
@@ -155,6 +158,7 @@ export class Notifier {
             distanceKm: match.distanceKm,
             etaMin: match.etaMin,
             reason: match.reason,
+            ...(match.closestKm !== undefined ? { closestKm: match.closestKm } : {}),
           };
           if (await this.alreadySaid(user.chat_id, line, now)) continue;
 
@@ -245,5 +249,7 @@ function toTargetView(row: TargetRow): TargetView {
     courseDeg: row.course_deg,
     confidence: row.confidence,
     observedAt: row.observed_at,
+    relation: row.relation,
+    toArea: row.to_area === 1,
   };
 }

@@ -42,6 +42,8 @@ export interface AlertLine {
   /** Minutes until it could reach the reader, when it is pointed at them. */
   etaMin: number | null;
   reason: MatchReason;
+  /** `approaching` only: how close the projected path passes, km. */
+  closestKm?: number;
 }
 
 /**
@@ -60,6 +62,22 @@ export function formatAlertLine(line: AlertLine): string {
   const count = line.count > 1 ? ` ×${line.count}` : '';
   const km = `~${Math.round(line.distanceKm)} км від вас`;
   const name = line.toName === null ? null : escapeHtml(line.toName);
+
+  /*
+   * A projection from a reported position. Both numbers are estimates from the
+   * stated heading and the type's typical speed, so the line says so: where it was
+   * reported, how close the projected path passes, and roughly when.
+   */
+  if (line.reason === 'approaching') {
+    const pass = line.closestKm === undefined ? ''
+      : line.closestKm < 2 ? ' · курс прямо на вас'
+      : ` · пройде за ~${Math.round(line.closestKm)} км`;
+    const when = line.etaMin === null ? ''
+      : line.etaMin < 1 ? ' · вже поруч'
+      : ` · ~${Math.round(line.etaMin)} хв (орієнтовно)`;
+    // The name is in the nominative, so no preposition is glued to it.
+    return `⚠️ ${typeLabel(line.type)}${count} — ${name ? `${name} (${km})` : km}${pass}${when}`;
+  }
 
   const where = name
     ? line.reason === 'in_radius'

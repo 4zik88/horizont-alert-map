@@ -24,7 +24,8 @@
     "llm:check": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/llm-check.ts",
     "bot:check": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/bot-check.ts",
     "import:sqlite": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/import-sqlite.ts",
-    "fuzzy:audit": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/fuzzy-audit.ts"
+    "fuzzy:audit": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/fuzzy-audit.ts",
+    "vapid:keys": "tsx apps/worker/scripts/vapid-keys.ts"
   },
   "devDependencies": {
     "tsx": "^4.23.13",

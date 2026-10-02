@@ -341,3 +341,12 @@ reference; this section explains why it differs from the plan.
 | Map access | allowlist | the bot's allowlist, enforced at login; sessions of removed users end at worker boot | The allowlist lives in the worker's environment. |
 | Fuzzy matching | Levenshtein ≤ 2 | ≤ 1, inside a known oblast only | Every distance-2 match on the corpus was a wrong place. |
 | LLM default | Haiku | Groq by default; Haiku when Anthropic is selected | Amended at approval. |
+
+## 7. Stage 4 (2026-10-02)
+
+| Area | Planned | Built | Why |
+|---|---|---|---|
+| Bot library | grammY | the existing hand-written bot (native fetch) | It is tested and in production; porting proven modules was approved over rewriting them. |
+| Rule (b) | ≤ 40 km pass, ≤ 30 min | as planned, as a third rule beside "in radius" and the course corridor; positions only, never areas or unprojected types | Same computation as the map's "time to reach you". |
+| `notice_ledger.channel` | per channel | one ledger row per warning, delivered to all channels | One decision per warning; delivered when any channel took it. |
+| Push endpoints | any | only the browsers' push services | The worker POSTs to the stored URL; anything else is a request forwarder. |

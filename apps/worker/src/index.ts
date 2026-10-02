@@ -11,6 +11,8 @@ import { mapLoginMessage, revokeRemovedUsers } from './map/login.js';
 import { ParseWorker } from './parser/worker.js';
 import { Poller } from './telegram/poller.js';
 import { TelegramApi } from './bot/api.js';
+import { PushSender } from './notify/push.js';
+import { fanout } from './notify/delivery.js';
 import { Bot } from './bot/bot.js';
 import { AppState, Users } from './db/users.js';
 import { Notifier, DEFAULT_NOTIFIER } from './notify/notifier.js';
@@ -66,6 +68,16 @@ async function main(): Promise<void> {
   const stoppables: { stop(): Promise<void> }[] = [];
   let telegramApi: TelegramApi | undefined;
 
+  // Web Push rides on the same decisions as the Telegram DMs; see notify/delivery.ts.
+  const push = config.VAPID_PUBLIC_KEY && config.VAPID_PRIVATE_KEY && config.VAPID_SUBJECT
+    ? new PushSender(db, {
+        publicKey: config.VAPID_PUBLIC_KEY,
+        privateKey: config.VAPID_PRIVATE_KEY,
+        subject: config.VAPID_SUBJECT,
+      })
+    : undefined;
+  logger.info({ webPush: push !== undefined }, 'warning channels');
+
   if (config.TELEGRAM_BOT_TOKEN) {
     const recipients = allowedChatIds().length + allowedUsernames().length;
     if (recipients === 0) {
@@ -97,7 +109,19 @@ async function main(): Promise<void> {
     bot.start();
     stoppables.push(bot);
 
-    const notifier = new Notifier(db, users, state, api, {
+  } else {
+    logger.info('TELEGRAM_BOT_TOKEN not set — the bot does not start');
+  }
+
+  /*
+   * Target warnings go to every channel there is: the Telegram DM and/or Web Push.
+   * Outside the bot block so push alone still warns.
+   */
+  const sink = fanout(telegramApi, push);
+  if (sink) {
+    const users = new Users(db);
+    const state = new AppState(db);
+    const notifier = new Notifier(db, users, state, sink, {
       ...DEFAULT_NOTIFIER,
       intervalMs: config.NOTIFY_INTERVAL_MS,
       cooldownMs: config.NOTIFY_COOLDOWN_MS,
@@ -106,14 +130,13 @@ async function main(): Promise<void> {
         maxAgeMs: config.NOTIFY_MAX_AGE_MS,
         courseToleranceDeg: config.NOTIFY_COURSE_TOLERANCE_DEG,
         leadMinutes: config.NOTIFY_LEAD_MINUTES,
+        maxEtaMin: config.NOTIFY_MAX_ETA_MIN,
       },
     });
     notifier.start();
     stoppables.push(notifier);
-
-
   } else {
-    logger.info('TELEGRAM_BOT_TOKEN not set — bot and notifications disabled');
+    logger.info('no warning channel configured — target warnings are off');
   }
 
   /*
@@ -128,7 +151,7 @@ async function main(): Promise<void> {
       ? config.ALERTS_PROVIDER
       : config.ALERTS_IN_UA_TOKEN ? 'alerts_in_ua' : 'alerts_in_ua_public';
 
-  const watcher = new AlertWatcher(db, new Users(db), telegramApi, {
+  const watcher = new AlertWatcher(db, new Users(db), sink, {
     provider: alertProvider,
     token: config.ALERTS_IN_UA_TOKEN,
     intervalMs: config.ALERTS_POLL_INTERVAL_MS,

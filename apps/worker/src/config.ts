@@ -65,6 +65,11 @@ const schema = z.object({
   // Where the map is served, e.g. https://horizont.up.railway.app. Without it the bot
   // issues no map logins and /map says the map is not set up.
   PUBLIC_URL: z.string().url().optional(),
+  // Web Push, the second warning channel. Generate a pair with `pnpm vapid:keys`; the
+  // API gets the same public key. Without both keys and a subject, push is off.
+  VAPID_PUBLIC_KEY: z.string().min(40).optional(),
+  VAPID_PRIVATE_KEY: z.string().min(20).optional(),
+  VAPID_SUBJECT: z.string().regex(/^(mailto:|https:\/\/)/).optional(),
 
   NOTIFY_INTERVAL_MS: z.coerce.number().int().min(1_000).default(15_000),
   NOTIFY_COOLDOWN_MS: z.coerce.number().int().min(0).default(300_000),
@@ -72,6 +77,8 @@ const schema = z.object({
   NOTIFY_MAX_AGE_MS: z.coerce.number().int().min(60_000).default(1_800_000),
   NOTIFY_COURSE_TOLERANCE_DEG: z.coerce.number().min(1).max(90).default(30),
   NOTIFY_LEAD_MINUTES: z.coerce.number().min(1).max(180).default(25),
+  // A projected arrival this soon is worth a warning (the brief: 30 minutes).
+  NOTIFY_MAX_ETA_MIN: z.coerce.number().min(1).max(120).default(30),
 
   // 'auto' uses alerts.in.ua's tokened API when a token is set, and its public
   // situation report otherwise — so alerts are correct with no signup at all.
@@ -99,6 +106,7 @@ const SECRET_KEYS = [
   'ANTHROPIC_API_KEY',
   'TELEGRAM_BOT_TOKEN',
   'ALERTS_IN_UA_TOKEN',
+  'VAPID_PRIVATE_KEY',
   'ALLOWED_CHAT_IDS',
   'ALLOWED_USERNAMES',
 ] as const satisfies readonly (keyof Config)[];

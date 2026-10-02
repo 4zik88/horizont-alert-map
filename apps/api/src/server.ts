@@ -8,7 +8,8 @@ import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
 import { HISTORY_MS, type ClientMessage, type Me, type Snapshot } from '@horizont/contract';
 import {
-  alertsAt, appendEvent, consumeLogin, createSession, deleteSession, latestSeq, pruneAuth,
+  alertsAt, appendEvent, consumeLogin, countPushSubscriptions, deletePushSubscription,
+  savePushSubscription, createSession, deleteSession, latestSeq, pruneAuth,
   pruneEvents, sessionUser, sourceStatuses, SESSION_TTL_MS, tracksAt, type SessionUser, type Sql,
 } from '@horizont/db';
 import { geoDataPath } from '@horizont/geo/node';
@@ -26,7 +27,9 @@ declare module 'fastify' {
 
 export interface ServerDeps {
   sql: Sql;
-  config: Pick<Config, 'cookieSecure' | 'WEB_DIST' | 'SOURCE_STALE_MS' | 'LOG_LEVEL' | 'NODE_ENV'>;
+  config: Pick<Config, 'cookieSecure' | 'WEB_DIST' | 'SOURCE_STALE_MS' | 'LOG_LEVEL' | 'NODE_ENV'> & {
+    VAPID_PUBLIC_KEY?: string | undefined;
+  };
   now?: () => number;
   /** Tests turn the request log off. */
   logger?: boolean;
@@ -49,6 +52,23 @@ const CSP = [
   "base-uri 'none'",
   "form-action 'self'",
 ].join('; ');
+
+/*
+ * The browser vendors' push services. The worker POSTs to whatever endpoint is stored,
+ * so an arbitrary HTTPS URL would let a session aim it at any host, internal ones
+ * included. Chrome/Edge (FCM, WNS), Firefox (autopush) and Safari (Apple) cover every
+ * browser this app supports.
+ */
+const PUSH_HOSTS = [
+  'fcm.googleapis.com',
+  'updates.push.services.mozilla.com',
+  'push.services.mozilla.com',
+  'web.push.apple.com',
+  'notify.windows.com',
+];
+export function isPushService(hostname: string): boolean {
+  return PUSH_HOSTS.some((h) => hostname === h || hostname.endsWith(`.${h}`));
+}
 
 /** Login secrets travel in URLs; they must never reach a log line. */
 const scrubUrl = (url: string) => url.replace(/([?&]t=)[^&]*/g, '$1[redacted]');
@@ -226,6 +246,51 @@ export async function buildServer(deps: ServerDeps): Promise<{ app: FastifyInsta
     if (req.headers['if-none-match'] === regionsEtag) return reply.code(304).send();
     return reply.type('application/geo+json').send(regions);
   });
+
+  // ─── web push ─────────────────────────────────────────────────────────────
+  app.get('/api/push', { preHandler: authenticate }, async (req) => ({
+    publicKey: config.VAPID_PUBLIC_KEY ?? null,
+    subscriptions: await countPushSubscriptions(sql, req.user!.chatId),
+  }));
+
+  const base64url = /^[A-Za-z0-9_-]+=*$/;
+  app.post<{ Body: { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } } }>(
+    '/api/push/subscribe',
+    { preHandler: authenticate, config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      if (!config.VAPID_PUBLIC_KEY) return reply.code(404).send({ error: 'push_not_configured' });
+      const { endpoint, keys } = req.body ?? {};
+      const p256dh = keys?.p256dh;
+      const auth = keys?.auth;
+      // A push endpoint is an HTTPS URL of the browser vendor's push service; anything
+      // else would turn the worker into a request forwarder.
+      let url: URL | null = null;
+      try {
+        url = typeof endpoint === 'string' && endpoint.length <= 1000 ? new URL(endpoint) : null;
+      } catch {
+        url = null;
+      }
+      if (
+        !url || url.protocol !== 'https:' || !isPushService(url.hostname) ||
+        typeof p256dh !== 'string' || !base64url.test(p256dh) || p256dh.length > 200 ||
+        typeof auth !== 'string' || !base64url.test(auth) || auth.length > 100
+      ) {
+        return reply.code(400).send({ error: 'bad_subscription' });
+      }
+      await savePushSubscription(sql, req.user!.chatId, { endpoint: url.href, p256dh, auth }, now());
+      return reply.code(204).send();
+    },
+  );
+
+  app.post<{ Body: { endpoint?: unknown } }>(
+    '/api/push/unsubscribe',
+    { preHandler: authenticate },
+    async (req, reply) => {
+      const endpoint = req.body?.endpoint;
+      if (typeof endpoint === 'string') await deletePushSubscription(sql, req.user!.chatId, endpoint);
+      return reply.code(204).send();
+    },
+  );
 
   // ─── realtime ─────────────────────────────────────────────────────────────
   app.get('/ws', { websocket: true, preHandler: authenticate }, (socket, req) => {

@@ -15,6 +15,8 @@ const Env = z.object({
   COOKIE_SECURE: z.enum(['true', 'false']).optional(),
   /** A channel that has not polled successfully for this long is shown as unhealthy. */
   SOURCE_STALE_MS: z.coerce.number().int().positive().default(5 * 20_000),
+  /** Web Push. Public key only: the worker holds the private key and does the sending. */
+  VAPID_PUBLIC_KEY: z.string().min(40).optional(),
 });
 
 export type Config = z.infer<typeof Env> & { cookieSecure: boolean };

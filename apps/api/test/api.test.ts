@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import type { ServerMessage } from '@horizont/contract';
-import { appendEvent, issueLogin, syncAlerts, type Sql } from '@horizont/db';
+import { appendEvent, createSession, issueLogin, syncAlerts, type Sql } from '@horizont/db';
 import { testDb, truncateAll } from '@horizont/db/testing';
 import type { FastifyInstance } from 'fastify';
 import { buildServer, SESSION_COOKIE } from '../src/server.js';
@@ -34,11 +34,12 @@ beforeEach(async () => {
 const followLink = (token: string) =>
   app.inject({ method: 'POST', url: '/auth', headers: { 'content-type': 'application/x-www-form-urlencoded' }, payload: `t=${encodeURIComponent(token)}` });
 
+/**
+ * A session for tests that are not about logging in. Going through POST /auth every
+ * time trips its 10-per-minute rate limit, which is that limit doing its job.
+ */
 async function login(): Promise<string> {
-  const { token } = await issueLogin(sql, 42, NOW);
-  const res = await followLink(token);
-  const set = res.cookies.find((c) => c.name === SESSION_COOKIE)!;
-  return `${SESSION_COOKIE}=${set.value}`;
+  return `${SESSION_COOKIE}=${await createSession(sql, 42, NOW)}`;
 }
 
 describe('access', () => {
@@ -176,5 +177,43 @@ describe('websocket', () => {
     assert.equal((await next(3))[2]!.t, 'pong');
     ws.terminate();
     await hub.stop();
+  });
+});
+
+describe('web push subscriptions', () => {
+  const sub = (endpoint: string) => ({ endpoint, keys: { p256dh: 'BOr1x4G3yU2qM9_s', auth: 'k8JV6sjdbhAi' } });
+
+  test('without a VAPID key the server says push is off and refuses subscriptions', async () => {
+    const cookie = await login();
+    assert.deepEqual((await app.inject({ url: '/api/push', headers: { cookie } })).json(), { publicKey: null, subscriptions: 0 });
+    const res = await app.inject({ method: 'POST', url: '/api/push/subscribe', headers: { cookie }, payload: sub('https://fcm.googleapis.com/fcm/send/abc') });
+    assert.equal(res.statusCode, 404);
+  });
+
+  test('with a key: stores a real push endpoint, refuses anything else, and unsubscribes', async () => {
+    const keyed = await buildServer({ sql, config: { ...config, VAPID_PUBLIC_KEY: 'B'.repeat(87) }, now: () => NOW, logger: false });
+    await keyed.app.ready();
+    const cookie = await login();
+    const post = (body: unknown) => keyed.app.inject({ method: 'POST', url: '/api/push/subscribe', headers: { cookie }, payload: body as object });
+
+    assert.equal((await post(sub('https://fcm.googleapis.com/fcm/send/abc'))).statusCode, 204);
+    assert.equal((await post(sub('https://web.push.apple.com/QH0'))).statusCode, 204);
+    for (const bad of ['http://fcm.googleapis.com/x', 'https://evil.example/x', 'https://worker.railway.internal/x', 'https://fcm.googleapis.com.evil.example/x']) {
+      assert.equal((await post(sub(bad))).statusCode, 400, bad);
+    }
+    assert.equal((await post({ endpoint: 'https://fcm.googleapis.com/fcm/send/z', keys: { p256dh: '<script>', auth: 'x' } })).statusCode, 400);
+
+    const info = (await keyed.app.inject({ url: '/api/push', headers: { cookie } })).json();
+    assert.equal(info.subscriptions, 2);
+    assert.equal(info.publicKey.length, 87);
+
+    await keyed.app.inject({ method: 'POST', url: '/api/push/unsubscribe', headers: { cookie }, payload: { endpoint: 'https://fcm.googleapis.com/fcm/send/abc' } });
+    assert.equal((await keyed.app.inject({ url: '/api/push', headers: { cookie } })).json().subscriptions, 1);
+    await keyed.hub.stop();
+    await keyed.app.close();
+  });
+
+  test('subscribing requires a session', async () => {
+    assert.equal((await app.inject({ method: 'POST', url: '/api/push/subscribe', payload: sub('https://fcm.googleapis.com/x') })).statusCode, 401);
   });
 });

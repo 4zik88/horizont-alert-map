@@ -3,7 +3,8 @@ import { Users } from '../db/users.js';
 import { logger } from '../logger.js';
 import { oblastByKey } from '@horizont/parser';
 import { raionName, raionsOf } from '@horizont/geo/node';
-import { TelegramApi, trySend } from '../bot/api.js';
+import { trySend } from '../bot/api.js';
+import type { MessageSink } from '../notify/delivery.js';
 import { fetchAlertState, isActive, type AlertLevel, type AlertProvider } from './client.js';
 import { publishAlerts } from '../map/publish.js';
 
@@ -33,14 +34,14 @@ export interface AlertWatcherOptions {
  */
 export class AlertWatcher {
   private readonly users: Users;
-  private readonly api: TelegramApi | undefined;
+  private readonly api: MessageSink | undefined;
   private readonly opts: AlertWatcherOptions;
   private readonly db: Db;
   private timer: NodeJS.Timeout | undefined;
   private stopping = false;
   private running = false;
 
-  constructor(db: Db, users: Users, api: TelegramApi | undefined, opts: AlertWatcherOptions) {
+  constructor(db: Db, users: Users, api: MessageSink | undefined, opts: AlertWatcherOptions) {
     this.db = db;
     this.users = users;
     this.api = api;

@@ -358,3 +358,13 @@ describe('Users.backfillRaions', () => {
     assert.equal((await users.get(100))?.raion, null);
   });
 });
+
+describe('approaching line format', () => {
+  test('says where it was reported, how close it passes, and that the time is approximate', async () => {
+    const { formatAlertLine } = await import('../src/bot/format.js');
+    assert.equal(
+      formatAlertLine({ type: 'uav', count: 2, toName: 'Бровари', distanceKm: 19.4, etaMin: 6.2, reason: 'approaching', closestKm: 7.1 }),
+      '⚠️ БпЛА ×2 — Бровари (~19 км від вас) · пройде за ~7 км · ~6 хв (орієнтовно)',
+    );
+  });
+});

@@ -12,7 +12,8 @@ Two ways to read the same data:
 - **The map** (an installable PWA) shows alerts by raion and oblast, the reported
   targets and their recent paths, an approximate 10/20/30-minute projection, an
   approximate time to reach the reader, and the last three hours on a timeline. It
-  updates live and keeps working offline from the last state it saw.
+  updates live, keeps working offline from the last state it saw, and can deliver the
+  bot's warnings as browser notifications (Web Push).
 
 Both read public sources only, and both say so: every screen carries "дані з відкритих
 джерел, не є офіційним попередженням", and every number that is an estimate is labelled
@@ -78,8 +79,9 @@ Three services from this one repository:
 Both build with `pnpm install --frozen-lockfile && pnpm build` and need
 `NODE_VERSION=22.23.2` and `DATABASE_URL` (a reference to the Postgres service's
 variable). The worker also needs `TELEGRAM_BOT_TOKEN`, the allowlist and `PUBLIC_URL`
-(the api service's public URL, for the login links). The API needs nothing else in
-production: cookies are `Secure` there by default.
+(the api service's public URL, for the login links), and for Web Push the three
+`VAPID_*` variables; the API needs only `VAPID_PUBLIC_KEY` besides the database.
+Cookies are `Secure` in production by default.
 
 To move an existing SQLite database across once, `pnpm import:sqlite <path-to-app.db>`
 copies it into an empty `DATABASE_URL` database with ids preserved (`--force` replaces
@@ -299,13 +301,20 @@ pnpm bot:check   # verifies the token, shows the allowlist and registered users,
 
 ### When someone gets a message
 
-Two independent reasons, from `apps/worker/src/notify/proximity.ts` — pure and heavily tested,
+Three reasons, from `apps/worker/src/notify/proximity.ts` — pure and heavily tested,
 because this is what makes a phone buzz at 03:00:
 
-1. **In radius** — the target is within the user's own radius (default 40 km).
-2. **Heading towards** — the course points at them and the target can plausibly
-   arrive soon. The lookahead scales with how fast the type actually flies, so a
-   cruise missile warns from much further out than a propeller drone.
+1. **In radius** — the target, or the town it is heading for, is within the user's own
+   radius (default 40 km).
+2. **Approaching** — a reported *position* with a heading projects to pass within the
+   radius and arrive within 30 minutes (`NOTIFY_MAX_ETA_MIN`). This is the brief's rule,
+   computed with the same `approach()` as the map's "time to reach you", so the map and
+   the warning never disagree. Destinations, whole-oblast reports and the types the map
+   never projects (ballistic, KAB, aviation, unknown) are excluded. Replayed over 6,246
+   stored targets for six cities it adds 38 warnings to 1,391.
+3. **Heading towards** — a course from a named origin points at them and the target
+   can plausibly arrive soon. The lookahead scales with how fast the type actually
+   flies, so a cruise missile warns from much further out than a propeller drone.
 
 False alarms are the real risk: for a group of ten, a bot that cries wolf gets muted
 and is then worse than useless. Three guards, all tunable by env:
@@ -317,8 +326,9 @@ and is then worse than useless. Three guards, all tunable by env:
 | `NOTIFY_COURSE_TOLERANCE_DEG` | 30 | narrow corridor, not a broad sweep |
 | `NOTIFY_LEAD_MINUTES` | 25 | further out and the course will likely change |
 
-Message format:
+Message formats:
 `⚠️ Реактивний БпЛА — курс на Жашків (~106 км від вас) · до вас ~23 хв`
+`⚠️ БпЛА — Березань (~69 км від вас) · пройде за ~15 км · ~22 хв (орієнтовно)`
 
 **Each number is tied to the thing it measures.** The earlier format printed one
 distance for both, and which fact you got depended on why the alert had fired:
@@ -347,7 +357,29 @@ than sent separately, and duplicate reports of the same target from different ch
 collapse to one line, keeping the nearest reading.
 
 Only what is actually delivered is recorded, so a failed send is retried rather than
-silently swallowed by the cooldown. The ledger is pruned by age rather than by
+silently swallowed by the cooldown.
+
+### Web Push
+
+The same warnings, and the same raion alert start and all-clear messages, also go to
+every browser the user turned "Сповіщення" on in, through Web Push. One decision per
+warning is delivered to both channels (`apps/worker/src/notify/delivery.ts`): it counts
+as delivered when either took it, and is retried when neither did. The system
+notification's title is the headline ("⚠️ БпЛА", "🚨 Повітряна тривога", "+N" for
+several) and the body carries the details and the disclaimer. Pushes live 15 minutes
+(TTL): a warning that reaches a phone switched on an hour later is not a warning.
+
+Warnings are decided from the location shared with the bot; the map's own location
+never leaves the device, so a browser of someone who never shared a location with the
+bot receives nothing. Logging out unsubscribes the browser. Subscriptions the push
+service reports as gone (404/410) are deleted. The API accepts endpoints only on the
+browsers' push services (Google, Mozilla, Apple, Microsoft), so a session cannot point
+the worker at an arbitrary host. On iPhone, push works only in the installed app
+(iOS 16.4+), and the map says so.
+
+Generate keys once with `pnpm vapid:keys`: `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and
+`VAPID_SUBJECT` on the worker, `VAPID_PUBLIC_KEY` on the API. Without them push is off
+and the toggle is hidden. A new pair invalidates every existing subscription. The ledger is pruned by age rather than by
 cascade, since it is no longer anchored to a target row.
 
 ### Raion alerts
@@ -451,7 +483,8 @@ shared with the bot stays in the database for the bot's own warnings.
   "Тільки моя область".
 - Basemap: OpenFreeMap's dark style, keyless. It references one sprite image it does not
   ship, which logs a harmless console warning.
-- Not yet tested on a real device or as an installed app, and Web Push is not built.
+- Not yet tested on a real device or as an installed app; push was verified with
+  Chrome and Google's push service only.
 
 ## Where alert data comes from
 
@@ -488,7 +521,6 @@ false відбій to every user at once.
 
 - **The official Ukraine Alarm API** as the primary alert source, with alerts.in.ua as
   the cross-check — see `docs/data-sources.md`. It needs a key requested by a person.
-- **Web Push** as a second warning channel (stage 4).
 - **Marker clustering** at low zoom.
 - **Two more channels** (@povitryanatrivogaaa, @monitorwarr), only after their formats
   are in the parser's corpus tests.

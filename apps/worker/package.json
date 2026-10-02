@@ -16,11 +16,13 @@
     "@horizont/parser": "workspace:*",
     "better-sqlite3": "13.0.3",
     "pino": "^10.3.1",
+    "web-push": "^3.6.7",
     "zod": "^4.6.4"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.18.0",
+    "@types/web-push": "^3.6.4",
     "pino-pretty": "^13.1.3",
     "tsx": "^4.23.13",
     "typescript": "^5.9.3"

@@ -28,6 +28,9 @@ const target = (over: Partial<TargetView> = {}): TargetView => ({
   courseDeg: null,
   confidence: 0.95,
   observedAt: NOW - 60_000,
+  // The rules these tests were written for: a destination, not a projected position.
+  relation: 'towards',
+  toArea: false,
   ...over,
 });
 
@@ -161,6 +164,8 @@ describe('matchTarget — which distance is which', () => {
     courseDeg: 315,
     confidence: 0.9,
     observedAt: 1_000_000,
+    relation: 'towards',
+    toArea: false,
   };
 
   const opts = { ...DEFAULT_PROXIMITY, now: 1_000_000 };
@@ -206,5 +211,49 @@ describe('matchTarget — which distance is which', () => {
     const match = matchTarget(unnamed, KOZYATYN, opts)!;
 
     assert.equal(match.distanceKm, match.targetKm);
+  });
+});
+
+describe('rule 2: projected approach from a reported position', () => {
+  // Brovary, 19 km east of central Kyiv; a reader in Kyiv.
+  const BROVARY = { lat: 50.511, lon: 30.79 };
+  const KYIV: UserView = { chatId: 1, lat: 50.4501, lon: 30.5234, radiusKm: 40 };
+  const T = 1_790_000_000_000;
+  const o = { ...DEFAULT_PROXIMITY, now: T };
+  const over = (x: Partial<TargetView> = {}): TargetView => ({
+    id: 9, type: 'uav', toName: 'Бровари', toLat: BROVARY.lat, toLon: BROVARY.lon,
+    fromLat: null, fromLon: null, courseDeg: 270, confidence: 0.9, observedAt: T,
+    relation: 'over', toArea: false, ...x,
+  });
+
+  test('a Shahed over a town 19 km away is in the radius already', () => {
+    assert.equal(matchTarget(over(), KYIV, o)?.reason, 'in_radius');
+  });
+
+  test('the same Shahed seen 60 km east, heading west, is approaching with an ETA', () => {
+    // 60 km east of Kyiv on the same parallel: ~20 min at 180 km/h, passing ~0 km.
+    const far = { toLat: 50.4501, toLon: 30.5234 + 60 / (111.32 * Math.cos(50.45 * Math.PI / 180)) };
+    const m = matchTarget(over(far), KYIV, o)!;
+    assert.equal(m.reason, 'approaching');
+    assert.ok(Math.abs(m.etaMin! - 20) < 1, `eta ${m.etaMin}`);
+    assert.ok(m.closestKm! < 1);
+  });
+
+  test('more than 30 minutes out is not yet a warning', () => {
+    const far = { toLat: 50.4501, toLon: 30.5234 + 120 / (111.32 * Math.cos(50.45 * Math.PI / 180)) };
+    assert.equal(matchTarget(over(far), KYIV, o), undefined);
+  });
+
+  test('heading away, or with no heading, is not approaching', () => {
+    const far = { toLat: 50.4501, toLon: 30.5234 + 60 / (111.32 * Math.cos(50.45 * Math.PI / 180)) };
+    assert.equal(matchTarget(over({ ...far, courseDeg: 90 }), KYIV, o), undefined);
+    assert.equal(matchTarget(over({ ...far, courseDeg: null }), KYIV, o), undefined);
+  });
+
+  test('never projects a destination, a ballistic missile, or a whole oblast', () => {
+    const far = { toLat: 50.4501, toLon: 30.5234 + 60 / (111.32 * Math.cos(50.45 * Math.PI / 180)) };
+    assert.equal(matchTarget(over({ ...far, relation: 'towards' }), KYIV, o), undefined);
+    assert.equal(matchTarget(over({ ...far, type: 'ballistic' }), KYIV, o), undefined);
+    assert.equal(matchTarget(over({ toArea: true }), KYIV, o), undefined, 'not even in radius');
   });
 });

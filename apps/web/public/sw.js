@@ -7,7 +7,7 @@
  * - Basemap (tiles.openfreemap.org): cache-first with a bounded entry count.
  * - Everything else (history, login, logout, /auth, /ws) goes straight to the network.
  */
-const VERSION = 'v1';
+const VERSION = 'v2';
 const SHELL = `horizont-shell-${VERSION}`;
 const API = 'horizont-api-v1';
 const TILES = 'horizont-tiles-v1';
@@ -128,4 +128,42 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname === '/manifest.webmanifest') {
     event.respondWith(networkFirst(request, SHELL));
   }
+});
+
+/* ── Web Push: the same warnings as the Telegram bot ──────────────────── */
+
+self.addEventListener('push', (event) => {
+  let data = { title: 'Horizont', body: '', url: '/' };
+  try {
+    data = { ...data, ...event.data.json() };
+  } catch {
+    /* a payload we cannot read still deserves a notification */
+  }
+  event.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      icon: '/icons/icon-192.png',
+      badge: '/icons/icon-192.png',
+      data: { url: data.url },
+      // Each warning stands alone: a later one must not silently replace an earlier one.
+      tag: `w-${Date.now()}`,
+      requireInteraction: false,
+    }),
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = new URL(event.notification.data?.url ?? '/', self.location.origin).href;
+  event.waitUntil(
+    (async () => {
+      const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      const open = wins.find((w) => new URL(w.url).origin === self.location.origin);
+      if (open) {
+        await open.focus();
+        return;
+      }
+      await self.clients.openWindow(target);
+    })(),
+  );
 });

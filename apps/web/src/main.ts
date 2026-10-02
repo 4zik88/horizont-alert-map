@@ -1,6 +1,7 @@
 import './style.css';
 import { DISCLAIMER, type Me, type ServerMessage, type Snapshot } from '@horizont/contract';
 import { HttpError, fetchHistory, fetchMe, fetchRegions, fetchSnapshot, login, logout } from './api.js';
+import { currentSubscription, disablePush, enablePush, pushAvailability, pushEnvironment, pushInfo } from './push.js';
 import { Connection, wsUrl, type ConnState } from './connection.js';
 import { DEMO_ME, demoHistory, demoSnapshot, startDemoStream } from './demo.js';
 import { esc, hhmm, oblastName } from './format.js';
@@ -359,6 +360,47 @@ function startApp(me: Me, offlineBoot: boolean): void {
   btnLocate.addEventListener('click', () => (prefs.locate ? stopLocating() : startLocating()));
   if (prefs.locate) startLocating();
 
+  /* ── web push: the same warnings as the bot, in this browser ── */
+
+  const btnPush = $<HTMLButtonElement>('btn-push');
+  async function setupPush(): Promise<void> {
+    if (DEMO) return;
+    let key: string | null = null;
+    try {
+      key = (await pushInfo()).publicKey;
+    } catch {
+      return;
+    }
+    const avail = pushAvailability(pushEnvironment(key));
+    if (!avail.show) return;
+    btnPush.hidden = false;
+    if (!avail.usable) {
+      btnPush.addEventListener('click', () => toast(avail.hint));
+      return;
+    }
+    const on = (await currentSubscription().catch(() => null)) !== null;
+    btnPush.setAttribute('aria-pressed', String(on));
+    btnPush.addEventListener('click', async () => {
+      if (btnPush.getAttribute('aria-pressed') === 'true') {
+        await disablePush();
+        btnPush.setAttribute('aria-pressed', 'false');
+        toast('Сповіщення в цьому браузері вимкнено');
+        return;
+      }
+      const result = await enablePush(key!);
+      if (result === 'ok') {
+        btnPush.setAttribute('aria-pressed', 'true');
+        // Warnings are decided from the location shared with the bot, never this one.
+        toast(me.oblast
+          ? 'Сповіщення увімкнено — ті самі попередження, що й у боті'
+          : 'Сповіщення увімкнено. Щоб вони приходили, надішліть боту свою локацію');
+      } else {
+        toast(result === 'denied' ? 'Сповіщення не дозволено' : 'Не вдалося увімкнути сповіщення');
+      }
+    });
+  }
+  void setupPush();
+
   /* ── sources ── */
 
   $('sources').addEventListener('click', () => toast($('sources').title));
@@ -425,6 +467,9 @@ function startApp(me: Me, offlineBoot: boolean): void {
   btnLogout.hidden = DEMO;
   btnLogout.addEventListener('click', async () => {
     try {
+      // Before the session ends: this browser must not keep receiving the previous
+      // user's warnings.
+      await disablePush().catch(() => undefined);
       await logout();
     } catch {
       toast('Немає зʼєднання — вийти не вдалося');
