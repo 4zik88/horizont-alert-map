@@ -26,25 +26,25 @@ prebuild that Railway uses:
 
 ```bash
 fnm use          # or: nvm use
-npm ci
+pnpm install
 ```
 
 ## Running
 
 ```bash
 cp .env.example .env
-npm run build:toponyms      # one-off: builds the all-Ukraine gazetteer from OSM
-npm run backfill            # one-off: ~500 messages per channel
-npm run dev                 # poller + parser + /healthz, pretty logs
-npm test
-npm run typecheck
+pnpm build:toponyms      # one-off: builds the all-Ukraine gazetteer from OSM
+pnpm backfill            # one-off: ~500 messages per channel
+pnpm dev                 # poller + parser + /healthz, pretty logs
+pnpm test
+pnpm typecheck
 ```
 
-`npm run build:toponyms` must run before the parser is useful — it populates
+`pnpm build:toponyms` must run before the parser is useful — it populates
 `toponyms`/`toponym_forms` from Overpass and takes a few minutes. Re-run it whenever
 you want fresher OSM data; it replaces the tables wholesale.
 
-`npm run backfill` is safe to re-run — ingest is idempotent. Its real purpose is to
+`pnpm backfill` is safe to re-run — ingest is idempotent. Its real purpose is to
 build a corpus of real messages to develop the step-2 parser against.
 
 `GET /healthz` returns 200 only while every enabled channel has polled successfully
@@ -61,7 +61,8 @@ One service, one process. Two settings are not optional:
 2. **Set replicas to 1.** SQLite is single-writer and WAL is not safe across
    containers; two replicas means two pollers double-writing.
 
-Also set `NODE_VERSION=22.23.2`. Build `npm ci && npm run build`, start `npm start`,
+Also set `NODE_VERSION=22.23.2`. Build `pnpm install --frozen-lockfile && pnpm build`,
+start `pnpm start` (the compiled worker, run from the repo root),
 healthcheck `/healthz` (all in `railway.json`).
 
 Railway volumes are not backed up. A nightly `VACUUM INTO` is worth adding before this
@@ -69,23 +70,41 @@ holds anything you would miss.
 
 ## Layout
 
+A pnpm monorepo. The packages are pure and storage-agnostic; the worker owns the
+database, the network and the logger. `apps/api` and `apps/web` arrive with the map
+stage — see `docs/stage-1-design.md`.
+
 ```
-src/config.ts          env schema; parse-or-exit, secrets never logged
-src/logger.ts          pino + redaction of user coordinates and chat ids
-src/sensitive.ts       impact / air-defence deny-list applied at ingest
-src/db/migrations.ts   append-only schema, versioned by PRAGMA user_version
-src/db/repo.ts         every SQL statement in the project
-src/telegram/parsePage.ts   pure HTML -> messages; the tricky part
-src/telegram/ingest.ts      messages -> DB, idempotent, edit-aware
-src/telegram/poller.ts      the loop: jitter, backoff, gap-fill, shutdown
-src/telegram/policy.ts      pure scheduling decisions, unit-tested
-src/parser/rules.ts         message text -> targets; the tricky part
-src/geo/raions.ts           point-in-polygon; which raion a reader is in
-src/notify/proximity.ts     pure: does this target concern this user
-src/notify/notifier.ts      matching, batching, the anti-spam ledger
-src/alerts/watcher.ts       raion air-raid transitions -> DMs
-src/http/server.ts          /healthz, and nothing else
+apps/worker/src/config.ts          env schema; parse-or-exit, secrets never logged
+apps/worker/src/logger.ts          pino + redaction of user coordinates and chat ids
+apps/worker/src/db/migrations.ts   append-only schema, versioned by PRAGMA user_version
+apps/worker/src/db/repo.ts         every SQL statement in the project
+apps/worker/src/db/gazetteer.ts    loads the toponym tables into the in-memory gazetteer
+apps/worker/src/telegram/          ingest (idempotent, edit-aware), poller, policy
+apps/worker/src/parser/worker.ts   the parse queue, the LLM budget and cache
+apps/worker/src/parser/llm-*.ts    Groq and Anthropic providers
+apps/worker/src/notify/            proximity (pure) and the notifier
+apps/worker/src/alerts/watcher.ts  raion air-raid transitions -> DMs
+apps/worker/src/http/server.ts     /healthz, and nothing else
+
+packages/parser/src/parsePage.ts   pure HTML -> messages; the tricky part
+packages/parser/src/sensitive.ts   impact / air-defence deny-list
+packages/parser/src/message.ts     message -> targets: lost/stand-down lines, time, LLM gate
+packages/parser/src/rules.ts       line -> targets; the other tricky part
+packages/parser/src/gazetteer.ts   in-memory place lookup, ranking, fuzzy fallback
+packages/parser/src/morphology.ts  inflected forms for every settlement name
+packages/parser/src/extraction.ts  the LLM contract: schema, prompt, gazetteer grounding
+packages/parser/src/time.ts        Kyiv clock times in messages -> instants
+
+packages/geo/src/sphere.ts         bearing, distance, destination point
+packages/geo/src/forecast.ts       10/20/30-minute projection, closest approach, ETA
+packages/geo/src/raions.ts         point-in-polygon; which raion a reader is in (Node only)
+packages/geo/data/                 gazetteer seed and raion polygons
 ```
+
+Dev scripts run from the repo root with `--conditions=source`, so packages are used
+straight from their TypeScript sources; `pnpm build` compiles them in dependency
+order for production.
 
 ## Things the markup will do to you
 
@@ -108,7 +127,7 @@ by a test in `test/parsePage.test.ts`:
 content hash, not by id alone: an edit rewrites the row and sets `parse_state` back to
 `pending` so step 2 re-parses it.
 
-Run `npm run fixtures:refresh` when a parser test starts failing — it re-downloads all
+Run `pnpm fixtures:refresh` when a parser test starts failing — it re-downloads all
 three fixtures so you can diff the markup.
 
 ## Parsing (step 2)
@@ -128,12 +147,18 @@ gazetteer entries and the lookup is an exact match on a normalised token.
 Over-generation is deliberate: an unreal form is harmless unless it collides with
 another real toponym, whereas a missing form silently loses a target.
 
-Measured against the 1,497-message corpus: **67% of messages parse into targets**
-(3,356 targets), 33% stay unparsed and go to the feed as text, and ~27% of messages
-are the ones the Claude fallback would be asked about. Every extracted coordinate
-falls inside Ukraine, and no target ever comes from a message flagged sensitive.
+Measured against the 1,957-message corpus (October 2026): **80.9% of messages parse
+into targets** (4,403 targets), 19.1% stay unparsed and go to the feed as text, and
+14.2% are the ones the LLM fallback would be asked about. No target ever comes from a
+message flagged sensitive — `parseMessage` refuses such text itself, not only the
+worker.
 
-Re-measure after any parser change with `npm run coverage` — it prints the stats plus
+The gazetteer is held in memory (`Gazetteer`), filled by whoever owns the database.
+Forms are regenerated from each name at load time, so a morphology fix takes effect on
+the next restart without rebuilding the toponym tables; restart after
+`pnpm build:toponyms` to pick up new names.
+
+Re-measure after any parser change with `pnpm coverage` — it prints the stats plus
 a frequency-ranked list of destination phrases that still fail to resolve, which is
 the worklist for the next rule worth writing.
 
@@ -154,6 +179,27 @@ Each of these was found by measuring against the real corpus, not by guessing:
   a compass bearing is read only when a course word is present, since "на півночі
   Чернігівщини" is a location and reading it as a heading points the arrow wrongly.
 - **Slash alternatives.** "у напрямку Одеси/Лиманки" takes the first that resolves.
+- **An inline heading before a comma list.** "Сумщина: 8 біля Кролевця, 1 на
+  Лебедин" is two groups. The heading used to hide the first clause's count, so the
+  two merged into one target with an invented Krolevets→Lebedyn course.
+- **A target reported gone.** "мінус по шахеду на Барабой", "На Тернопільщині -
+  зник", "Не фіксується більше" name where a target *was*. Those lines are dropped;
+  other lines of the same message still count.
+- **A threat stood down.** "Одещина відбій тривоги", "локаційно чисто", "без
+  фіксації" lines are dropped and never sent to the model.
+- **Stated times.** "О 15:20 пуски…" and "[13.09.2026 16:25] Пуск…" are observation
+  times, in Kyiv time. "якщо в бік Одещини +- 23:50" and "орієнтовно о 23:50" are
+  forecast arrivals and are ignored.
+
+### Misspellings
+
+After every exact lookup fails, a fuzzy match (Levenshtein distance 1) may resolve a
+misspelt name — but only under an oblast heading, only to a settlement in that oblast,
+for words of five letters or more, with the first letter equal, and never by shrinking
+a two-word name ("Чорний Кут" must not become "Чорна"). The brief allowed distance 2;
+measured on the corpus every distance-2 hit and every hit without an oblast heading was
+wrong ("Бугаз" near Odesa became "Бугас" in Donetsk oblast). `pnpm fuzzy:audit` lists
+every fuzzy resolution in the corpus with its source line for review.
 
 ### Ambiguity
 
@@ -173,17 +219,23 @@ set, else Anthropic, else nothing):
 | Provider | Cost at this volume | Notes |
 |---|---|---|
 | **Groq** (default) | free tier | OpenAI-compatible endpoint, no SDK dependency |
-| Anthropic | ~$3-10/month | structured outputs + prompt caching |
+| Anthropic (`claude-haiku-4-5-20251001`) | ~$2-4/month at ~64 calls/day | structured outputs + prompt caching |
 
 The model is **never trusted for coordinates**. It returns place *names*, resolved
 through the same gazetteer as the rules, so a model that invents a town produces
 nothing rather than a wrong pin. That guard is what makes a small free model a
 reasonable choice: it can fail to help, but it cannot put a false marker on the map.
 Every failure path — rate limit, retired model name, prose instead of JSON, network
-error — returns no targets and leaves the message in the feed as text.
+error — returns no answer (`null`) and leaves the message in the feed as text.
+
+**At most one call per message, and one per distinct text.** Answers are cached in
+`llm_cache` by the message's content hash, so a re-parse or a reposted text reads the
+stored answer. A message that has had its call never gets another, even when edited —
+@KozakChornobay edits nearly every post as a target moves. A failed call is neither
+cached nor counted, so the next parse of that message may try again.
 
 ```bash
-npm run llm:check      # lists the models your key can use, then runs the
+pnpm llm:check      # lists the models your key can use, then runs the
                        # extractor over real unresolved messages from your DB
 ```
 
@@ -199,10 +251,10 @@ unresolved messages are not locatable target reports at all ("Загроза з�
 are the better investment — they cost nothing per message and run in ~0.13 ms, which
 matters on a path where an alert is only useful while it is still early.
 
-Bump `PARSER_VERSION` in `src/parser/worker.ts` and requeue to re-parse the archive:
+Bump `PARSER_VERSION` in `apps/worker/src/parser/worker.ts` and requeue to re-parse the archive:
 
 ```sql
-UPDATE messages SET parse_state = 'pending' WHERE parser_version < 2;
+UPDATE messages SET parse_state = 'pending' WHERE parser_version < 9;
 ```
 
 ## The bot (step 3)
@@ -221,13 +273,13 @@ the bot subscribes to `edited_message`. Without that a live location would be st
 once and never move again.
 
 ```bash
-npm run bot:check   # verifies the token, shows the allowlist and registered users,
+pnpm bot:check   # verifies the token, shows the allowlist and registered users,
                     # then dry-runs recent targets to show who would be warned
 ```
 
 ### When someone gets a message
 
-Two independent reasons, from `src/notify/proximity.ts` — pure and heavily tested,
+Two independent reasons, from `apps/worker/src/notify/proximity.ts` — pure and heavily tested,
 because this is what makes a phone buzz at 03:00:
 
 1. **In radius** — the target is within the user's own radius (default 40 km).
@@ -288,8 +340,8 @@ in Kozyatyn heard about anything happening anywhere in Vinnytsia oblast, and —
 dangerous direction — could get an all-clear while their own raion was still under
 warning.
 
-The user's raion is a point-in-polygon lookup against `seed/raions.geojson` (161
-polygons, `src/geo/raions.ts`), done once when they share a location rather than on
+The user's raion is a point-in-polygon lookup against `packages/geo/data/raions.geojson` (161
+polygons, `packages/geo/src/raions.ts`), done once when they share a location rather than on
 every poll. The oblast is still derived from the nearest gazetteer settlement, and is
 the fallback for a point inside no polygon — Kyiv city, which is its own administrative
 unit, so the oblast-level message is the correct one there anyway.
@@ -324,10 +376,10 @@ false відбій to every user at once.
 ## Constraints
 
 - **No air-defence positions, no impacts.** Messages matching the deny-list in
-  `src/sensitive.ts` are flagged `is_sensitive` at ingest; they must never become
+  `packages/parser/src/sensitive.ts` are flagged `is_sensitive` at ingest; they must never become
   targets or reach anyone. The raw text is still stored so a false positive is
   recoverable — the flag is advisory and deliberately over-broad.
-- **User coordinates live only in SQLite.** They are never logged: `src/logger.ts`
+- **User coordinates live only in SQLite.** They are never logged: `apps/worker/src/logger.ts`
   redacts `lat`, `lon` and `chat_id` paths. The bot never echoes a location back
   either — it would then sit in Telegram's history and in any screenshot of the chat —
   and `bot:check` prints oblast and radius but never coordinates.

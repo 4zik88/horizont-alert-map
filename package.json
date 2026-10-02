@@ -1,37 +1,28 @@
 {
-  "name": "horizont-alert-app",
-  "version": "0.1.0",
+  "name": "horizont",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.28.0",
   "engines": {
     "node": ">=22.12 <23"
   },
   "scripts": {
-    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
-    "test": "tsx --test test/*.test.ts",
-    "backfill": "tsx --env-file-if-exists=.env scripts/backfill.ts",
-    "fixtures:refresh": "tsx scripts/refresh-fixtures.ts",
-    "build:toponyms": "tsx --env-file-if-exists=.env scripts/build-toponyms.ts",
-    "coverage": "tsx --env-file-if-exists=.env scripts/parser-coverage.ts",
-    "llm:check": "tsx --env-file-if-exists=.env scripts/llm-check.ts",
-    "bot:check": "tsx --env-file-if-exists=.env scripts/bot-check.ts",
-    "build:raions": "tsx --env-file-if-exists=.env scripts/build-raions.ts",
-    "backup": "tsx --env-file-if-exists=.env scripts/backup.ts"
-  },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.125.0",
-    "better-sqlite3": "13.0.3",
-    "node-html-parser": "^9.0.4",
-    "pino": "^10.3.1",
-    "zod": "^4.6.4"
+    "build": "pnpm -r --workspace-concurrency=1 build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "dev": "tsx watch --conditions=source --env-file-if-exists=.env apps/worker/src/index.ts",
+    "start": "node apps/worker/dist/index.js",
+    "backfill": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/backfill.ts",
+    "fixtures:refresh": "tsx --conditions=source apps/worker/scripts/refresh-fixtures.ts",
+    "build:toponyms": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/build-toponyms.ts",
+    "build:raions": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/build-raions.ts",
+    "coverage": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/parser-coverage.ts",
+    "llm:check": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/llm-check.ts",
+    "bot:check": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/bot-check.ts",
+    "backup": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/backup.ts",
+    "fuzzy:audit": "tsx --conditions=source --env-file-if-exists=.env apps/worker/scripts/fuzzy-audit.ts"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^9.6.0",
-    "@types/node": "^22.18.0",
-    "pino-pretty": "^13.1.3",
     "tsx": "^4.23.13",
     "typescript": "^5.9.3"
   }

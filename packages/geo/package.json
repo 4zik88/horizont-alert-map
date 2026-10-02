@@ -1,0 +1,21 @@
+{
+  "name": "@horizont/geo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": { "source": "./src/index.ts", "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./node": { "source": "./src/node.ts", "types": "./dist/node.d.ts", "default": "./dist/node.js" }
+  },
+  "files": ["dist", "data"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "tsx --conditions=source --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3"
+  }
+}
