@@ -68,24 +68,50 @@ stopped gets restarted rather than lingering. The API's `/healthz` checks the da
 
 ## Deploying to Railway
 
-Three services from this one repository:
+Three services in one Railway project, all deployed from this repository with one
+`railway.json`. The `start` script runs `scripts/start.mjs`, which starts the app named
+by the `HORIZONT_APP` variable (`worker` when unset), because a service cannot be
+pointed at a different config file from the CLI.
 
-| Service | Config file | Start | Notes |
-|---|---|---|---|
-| Postgres | — | — | Railway's Postgres; backups are its own |
-| worker | `railway.json` | `pnpm start:worker` | **replicas = 1**: two would double-poll and double-send |
-| api | `railway.api.json` | `pnpm start:api` | set the service's config-as-code path to `railway.api.json`; give it the public domain |
+| Service | `HORIZONT_APP` | Notes |
+|---|---|---|
+| Postgres | — | Railway's Postgres; backups are its own |
+| `horizont` | `worker` | the poller, parser, bot, warnings; **replicas = 1** — two would double-poll and double-send |
+| `api` | `api` | the map and its API; the only service that needs a public domain |
 
-Both build with `pnpm install --frozen-lockfile && pnpm build` and need
-`NODE_VERSION=22.23.2` and `DATABASE_URL` (a reference to the Postgres service's
-variable). The worker also needs `TELEGRAM_BOT_TOKEN`, the allowlist and `PUBLIC_URL`
-(the api service's public URL, for the login links), and for Web Push the three
-`VAPID_*` variables; the API needs only `VAPID_PUBLIC_KEY` besides the database.
-Cookies are `Secure` in production by default.
+Both app services need `DATABASE_URL=${{Postgres.DATABASE_URL}}`, `NODE_VERSION=22.23.2`
+and `NODE_ENV=production`. The worker also needs `TELEGRAM_BOT_TOKEN`, the allowlist,
+`GROQ_API_KEY`, `PUBLIC_URL` (the api's public URL, for the login links) and the three
+`VAPID_*` variables; the api needs `VAPID_PUBLIC_KEY`. Build and start are in
+`railway.json` (`pnpm install --frozen-lockfile --prod=false && pnpm build`, then
+`pnpm start`, health check `/healthz`).
 
-To move an existing SQLite database across once, `pnpm import:sqlite <path-to-app.db>`
-copies it into an empty `DATABASE_URL` database with ids preserved (`--force` replaces
-rows already there). Then requeue parsing so stored messages get this parser's fixes:
+From scratch with the CLI, in a linked project:
+
+```bash
+railway add --database postgres
+railway add --service api --variables 'HORIZONT_APP=api' \
+  --variables 'DATABASE_URL=${{Postgres.DATABASE_URL}}' \
+  --variables 'NODE_ENV=production' --variables 'NODE_VERSION=22.23.2'
+railway domain --service api
+railway variable set 'PUBLIC_URL=https://<api-domain>' --service horizont --skip-deploys
+railway up --service api --detach
+railway up --service horizont --detach
+```
+
+`--skip-deploys` matters when changing variables on a running service: without it
+Railway redeploys the code that is already there with the new variables.
+
+To move an existing SQLite database across once, run the import inside the worker,
+where the old volume is mounted (`railway ssh` needs an SSH key registered first,
+`railway ssh keys add`):
+
+```bash
+railway ssh --service horizont "pnpm import:sqlite /data/app.db --force"
+```
+
+`--force` is needed because the worker has already seeded the gazetteer. Then restart
+the worker, and requeue parsing so stored messages get this parser's fixes:
 
 ```sql
 UPDATE messages SET parse_state = 'pending' WHERE parser_version < 9;
